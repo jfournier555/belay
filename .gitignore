@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+dist/
+build/
+
+# Environment and secrets (never commit these)
+.env
+*.pem
+*.key
+
+# Harness runtime state
+approvals.json
+approvals.json.tmp
+
+# OS
+.DS_Store
+Thumbs.db
