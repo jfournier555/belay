@@ -1,4 +1,6 @@
-# Post Sales Agent Harness
+# Belay
+
+**A post sales AI harness.**
 
 ![The mountain is account renewal, expansion, and value. The rope is the LLM. The harness is the Post Sale Harness. The person is the human agent.](assets/mountain.png)
 
