@@ -1,4 +1,9 @@
-# CS Agent Harness
+# Post Sales Agent Harness
+
+![The mountain is account renewal, expansion, and value. The rope is the LLM. The harness is the Post Sale Harness. The person is the human agent.](assets/mountain.png)
+
+The mountain is account renewal, expansion, and value. The rope is the LLM.
+The harness is the Post Sale Harness. The person is the human agent.
 
 The chassis around the model for post-sales teams. A harness is everything
 around the model: routing, tools, memory, approvals. The model is the engine,
