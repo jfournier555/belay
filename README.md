@@ -2,23 +2,11 @@
 
 **A post sales AI harness.**
 
-![The mountain is account renewal, expansion, and value. The rope is the LLM. The harness is the Post Sale Harness. The person is the human agent.](assets/mountain.png)
+![A climber ascending a mountain.](assets/mountain.png)
 
-The mountain is account renewal, expansion, and value. The rope is the LLM.
-The harness is the Post Sale Harness. The person is the human agent.
+Post-sales is a hard climb. Every account is a steep peak: the renewal, the expansion, proving the value is real. The reps climbing them are doing it with a full book and no rope. Belay is the rope and the harness. It is everything around the model: routing, tools, memory, approvals. The model is the engine, Belay is the chassis, and the dashboard (phase 2) is what the CSM operates from. It keeps you from falling while you climb.
 
-The chassis around the model for post-sales teams. A harness is everything
-around the model: routing, tools, memory, approvals. The model is the engine,
-the harness is the chassis, and the dashboard (phase 2) is what the CSM
-operates from.
-
-This is the open, working answer to Kevin Lau's "Claude Customer Success
-Engine" post (Nov 9, 2026): 1 router + 8 agents drafting into an approval
-queue. Lau's architecture is right (router + specialists, approval queue is
-the correct design, the 8 jobs are the right 8 jobs). This project is the
-same shape, real, not gated, not a mock-up. It is also the sequel to
-["AI is taking the admin. The judgment is the job."](https://jfournier.net/articles/ai-admin-judgment/):
-the article's "the wiring is the job" productized.
+Belay is the sequel to ["AI is taking the admin. The judgment is the job."](https://jfournier.net/articles/ai-admin-judgment/): the article's "the wiring is the job" productized.
 
 ## How it works
 
