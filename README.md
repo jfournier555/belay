@@ -2,7 +2,7 @@
 
 **A post sales AI harness.**
 
-![A climber ascending a mountain.](assets/mountain.png)
+![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
 Post-sales is a hard climb. Every account is a steep peak: the renewal, the expansion, proving the value is real. The reps climbing them are doing it with a full book and no rope. Belay is the rope and the harness. It is everything around the model: routing, tools, memory, approvals. The model is the engine, Belay is the chassis, and the dashboard (phase 2) is what the CSM operates from. It keeps you from falling while you climb.
 
