@@ -35,12 +35,16 @@ class TestRouter(unittest.TestCase):
         result = self.router.route({"text": "prep a briefing for the meeting"})
         self.assertEqual(result.agent, "briefer")
 
-    def test_keyword_expansion_goes_to_planned_then_defaults(self):
-        # "expansion" is an expansion-spotter keyword, but that agent is
-        # planned, so the router must not send work there. It falls back
-        # to the default briefer (low confidence) rather than misrouting.
+    def test_keyword_expansion_routes_to_expansion_spotter(self):
         result = self.router.route({"text": "find expansion openings"})
-        self.assertNotEqual(result.agent, "expansion-spotter")
+        self.assertEqual(result.agent, "expansion-spotter")
+
+    def test_keyword_planned_agent_defaults(self):
+        # "qbr" is a qbr-builder keyword, but that agent is planned, so
+        # the router must not send work there. It falls back to the
+        # default briefer (low confidence) rather than misrouting.
+        result = self.router.route({"text": "build a qbr for this account"})
+        self.assertNotEqual(result.agent, "qbr-builder")
         self.assertEqual(result.agent, "briefer")
         self.assertEqual(result.confidence, "low")
 

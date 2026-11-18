@@ -1,4 +1,5 @@
-"""Tests for the agents: renewal desk and briefer end to end.
+"""Tests for the agents: renewal desk, briefer, and expansion spotter
+end to end.
 
 These run the full loop with stub tools and the stub LLM, so no network
 and no credentials are needed. They prove the agent gathers context from
@@ -37,7 +38,10 @@ class TestAgents(unittest.TestCase):
     def test_eight_agents_registered(self):
         self.assertEqual(len(AGENTS), 8)
         implemented = [n for n, a in AGENTS.items() if a.implemented]
-        self.assertEqual(sorted(implemented), ["briefer", "renewal-desk"])
+        self.assertEqual(
+            sorted(implemented),
+            ["briefer", "expansion-spotter", "renewal-desk"],
+        )
 
     def test_renewal_desk_runs_and_cites_sources(self):
         agent = AGENTS["renewal-desk"]
@@ -56,6 +60,25 @@ class TestAgents(unittest.TestCase):
         # account's renewal date, so the pipeline is demonstrably working.
         self.assertIn("Acme Corp", draft.text)
         self.assertIn("2027-02-15", draft.text)
+
+    def test_expansion_spotter_runs_and_cites_sources(self):
+        agent = AGENTS["expansion-spotter"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            self.budget,
+        )
+        self.assertEqual(draft.agent, "expansion-spotter")
+        self.assertIn("salesforce_get_account", draft.sources)
+        self.assertIn("salesforce_list_opportunities", draft.sources)
+        self.assertIn("salesforce_list_cases", draft.sources)
+        self.assertIn("slack_search_messages", draft.sources)
+        # The stub draft shows the gathered context, including the open
+        # expansion opportunity already in flight, so the pipeline is
+        # demonstrably working.
+        self.assertIn("Acme Corp", draft.text)
+        self.assertIn("Expansion (50 seats)", draft.text)
 
     def test_briefer_runs_and_cites_sources(self):
         agent = AGENTS["briefer"]

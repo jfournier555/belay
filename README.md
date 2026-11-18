@@ -13,7 +13,7 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 ```
 Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
-  -> Specialist agent (1 of 8, 2 implemented in v1)
+  -> Specialist agent (1 of 8, 3 implemented in v0.2)
   -> Tools (Salesforce + Slack, summary-first results)
   -> Draft
   -> Approval queue (a human approves, rejects, or edits)
@@ -88,12 +88,12 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 
 | Connector | Status | Tools |
 |---|---|---|
-| Salesforce | v1 | `salesforce_get_account`, `salesforce_list_opportunities`, `salesforce_list_cases` |
-| Slack | v1 | `slack_search_messages`, `slack_list_channels`, `slack_get_thread` |
+| Salesforce | v0.2 | `salesforce_get_account`, `salesforce_list_opportunities`, `salesforce_list_cases` |
+| Slack | v0.2 | `slack_search_messages`, `slack_list_channels`, `slack_get_thread` |
 | Gong | planned | See `connectors/gong/README.md` for the planned tools. |
 
 Each connector exposes its tools two ways, from one implementation
-(`tools.py`): in-process, through the harness tool registry (the v1 path),
+(`tools.py`): in-process, through the harness tool registry (the v0.2 path),
 and as a standalone MCP server (`server.py`, FastMCP over stdio) that any
 MCP-capable LLM can call. Run a connector as an MCP server with:
 
@@ -106,13 +106,13 @@ Calling the MCP servers from the harness via an MCP client (instead of
 in-process) is a phase-2 item. The tool functions are already written once
 and shared, so the cutover is a client, not a rewrite.
 
-## What is real vs scaffolded (v1 honesty)
+## What is real vs scaffolded (v0.2 honesty)
 
-**Real, tested (40 unit tests, all passing):**
+**Real, tested (42 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- Renewal desk and briefer agents, end to end, in stub mode.
+- Renewal desk, briefer, and expansion spotter agents, end to end, in stub mode.
 - Salesforce and Slack MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
@@ -120,13 +120,13 @@ and shared, so the cutover is a client, not a rewrite.
 **Written, not verified against a live system:**
 - The live Salesforce REST/SOQL calls and the live Slack Web API calls.
   They are real code, written against the documented APIs, but no
-  credentials were available while building v1, so they have not run
+  credentials were available while building v0.2, so they have not run
   against a real org or workspace. Treat them as "written, not verified"
   until someone runs them with real credentials. Stub mode is what runs
   in the demo and the tests.
 
 **Scaffolded / planned, not built:**
-- Six of the eight agents (scout, onboarding-guide, expansion-spotter,
+- Five of the eight agents (scout, onboarding-guide,
   qbr-builder, advocate-finder, voice-of-customer). Registered, routable
   in name only, `implemented=False`, and the router never sends them work.
 - The Gong connector (see `connectors/gong/README.md`).

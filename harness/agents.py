@@ -246,6 +246,63 @@ class BrieferAgent(Agent):
         )
 
 
+class ExpansionSpotterAgent(Agent):
+    """Drafts an expansion plan for an account.
+
+    Gathers: account summary, open opportunities (including any
+    expansion opportunity already in flight), open support cases, and
+    recent Slack signals. Drafts: where the expansion opening is (usage
+    gaps, new teams, new use cases), the evidence for it, and the next
+    three steps with owners.
+    """
+
+    name = "expansion-spotter"
+    display_name = "Expansion Spotter"
+    description = (
+        "Drafts an expansion plan: openings, evidence, next steps."
+    )
+    keywords = [
+        "expansion",
+        "expand",
+        "upsell",
+        "growth",
+        "land and expand",
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources = _gather(registry, calls, budget)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft an expansion plan for account %r. Cover: where the "
+            "expansion opening is (usage gaps, new teams, new use cases), "
+            "the evidence for it from the account data and Slack signals, "
+            "any open expansion opportunity already in flight, and the "
+            "next three steps with owners." % account,
+        )
+        system = (
+            "You are the expansion spotter for a customer success team. "
+            "You draft expansion plans. Name the opening, cite the "
+            "evidence, and do not invent numbers that are not in the "
+            "context."
+        )
+        text = llm.complete(prompt, system=system)
+        return Draft(
+            text=text,
+            agent=self.name,
+            job=job,
+            sources=sources,
+            tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+        )
+
+
 class PlannedAgent(Agent):
     """A registered agent that is not implemented yet.
 
@@ -270,10 +327,11 @@ class PlannedAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All eight agents, keyed by name. Two implemented, six planned."""
+    """All eight agents, keyed by name. Three implemented, five planned."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
+        "expansion-spotter": ExpansionSpotterAgent(),
         "scout": PlannedAgent(
             "scout",
             "Scout",
@@ -285,12 +343,6 @@ def build_agents() -> dict[str, Agent]:
             "Onboarding Guide",
             "Drafts onboarding plans and first-value checklists.",
             ["onboard", "onboarding", "first value", "kickoff", "go-live", "go live"],
-        ),
-        "expansion-spotter": PlannedAgent(
-            "expansion-spotter",
-            "Expansion Spotter",
-            "Finds expansion openings: usage gaps, new teams, new use cases.",
-            ["expansion", "expand", "upsell", "growth", "land and expand"],
         ),
         "qbr-builder": PlannedAgent(
             "qbr-builder",
