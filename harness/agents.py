@@ -7,14 +7,14 @@ renewal desk, voice-of-customer.
 V1 implements eight end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
-  renewal plan.
+  renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
 - briefer: the most common daily job. Gathers an account snapshot and recent
   activity, then drafts a pre-meeting brief.
 - expansion-spotter: finds expansion openings from usage gaps, new teams,
   and opportunities already in flight.
 - onboarding-guide: drafts an onboarding plan and a first-value checklist.
   The renewal gets decided in the first 60 days; first value is one
-  workflow working.
+  workflow working. Ties to the Onboarding Playbook on jfournier.net.
 - scout: finds new information about an account: new stakeholders, org
   changes, hiring signals, news, and new opportunities or risks.
 - qbr-builder: drafts a quarterly business review: outcomes delivered,
@@ -417,7 +417,7 @@ class OnboardingGuideAgent(Agent):
     working in the first 60 days), a first value checklist, open items and
     risk signals, and 30-day and 60-day milestones with owners. The renewal
     gets decided in the first 60 days, so the plan is built around getting
-    to first value fast.
+    to first value fast. Ties to the Onboarding Playbook on jfournier.net.
     """
 
     name = "onboarding-guide"
