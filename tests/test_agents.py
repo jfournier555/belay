@@ -1,6 +1,6 @@
 """Tests for the agents: renewal desk, briefer, expansion spotter,
-onboarding guide, scout, and qbr builder end to end, plus the proof
-checklist.
+onboarding guide, scout, qbr builder, and advocate finder end to end,
+plus the proof checklist.
 
 These run the full loop with stub tools and the stub LLM, so no network
 and no credentials are needed. They prove the agent gathers context from
@@ -45,6 +45,7 @@ class TestAgents(unittest.TestCase):
         self.assertEqual(
             sorted(implemented),
             [
+                "advocate-finder",
                 "briefer",
                 "expansion-spotter",
                 "onboarding-guide",
@@ -112,6 +113,35 @@ class TestAgents(unittest.TestCase):
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
         self.assertEqual(len(draft.proof), 4)
+
+    def test_advocate_finder_runs_and_cites_sources(self):
+        agent = AGENTS["advocate-finder"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            self.budget,
+        )
+        self.assertEqual(draft.agent, "advocate-finder")
+        self.assertIn("salesforce_get_account", draft.sources)
+        self.assertIn("salesforce_list_cases", draft.sources)
+        self.assertIn("slack_search_messages", draft.sources)
+        # The advocate finder does not pull opportunities: it looks for
+        # people, not deals.
+        self.assertNotIn("salesforce_list_opportunities", draft.sources)
+        # The stub draft shows the gathered context and the task: the
+        # account, a potential reference, and a champion.
+        self.assertIn("Acme Corp", draft.text)
+        self.assertIn("reference", draft.text)
+        self.assertIn("champion", draft.text)
+        # The proof checklist passes end to end in stub mode.
+        self.assertTrue(draft.proof_passed)
+        self.assertEqual(len(draft.proof), 4)
+
+    def test_advocate_keyword_routes(self):
+        router = Router(agents=AGENTS, llm=None)
+        route = router.route({"text": "find an advocate for Acme Corp"})
+        self.assertEqual(route.agent, "advocate-finder")
 
     def test_qbr_builder_runs_and_cites_sources(self):
         agent = AGENTS["qbr-builder"]
@@ -204,7 +234,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("Acme Corp", draft.text)
 
     def test_planned_agent_refuses_to_run(self):
-        agent = AGENTS["advocate-finder"]
+        agent = AGENTS["voice-of-customer"]
         self.assertFalse(agent.implemented)
         with self.assertRaises(NotImplementedError):
             agent.run({}, self.registry, self.llm, self.budget)

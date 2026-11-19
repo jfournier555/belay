@@ -4,7 +4,7 @@ The eight jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer.
 
-V1 implements six end to end:
+V1 implements seven end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -20,12 +20,14 @@ V1 implements six end to end:
 - qbr-builder: drafts a quarterly business review: outcomes delivered,
   adoption and value realized, open risks, and the plan for next quarter.
   Turns the account picture into the QBR deck narrative.
+- advocate-finder: finds champions and advocates: who uses the product
+  most, who praises it in Slack, who would make a good reference.
 
-The other two are registered as planned: they have a name, description, and
-keywords so the router knows about them, but implemented=False, so the
-router never sends them work. A job that explicitly names one gets a clear
-"planned, not implemented yet" result. Build them in the same shape as the
-six below: gather() pulls context from the tool registry, then the LLM
+The other one is registered as planned: it has a name, description, and
+keywords so the router knows about it, but implemented=False, so the
+router never sends it work. A job that explicitly names it gets a clear
+"planned, not implemented yet" result. Build it in the same shape as the
+seven below: gather() pulls context from the tool registry, then the LLM
 turns that context into a draft.
 
 Every agent follows the same contract:
@@ -644,6 +646,81 @@ class QBRBuilderAgent(Agent):
         )
 
 
+class AdvocateFinderAgent(Agent):
+    """Finds champions and advocates in an account.
+
+    Gathers: account summary, open support cases, and recent Slack
+    signals. Drafts: who uses the product most, who praises it in Slack,
+    who would make a good reference, and any champion already known from
+    the account data.
+    """
+
+    name = "advocate-finder"
+    display_name = "Advocate Finder"
+    description = (
+        "Finds champions and advocates: who uses it most, who praises it, "
+        "who would reference."
+    )
+    keywords = [
+        "advocate",
+        "reference",
+        "testimonial",
+        "case study",
+        "champion",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Names who praises the product in Slack",
+            sources=["slack_search_messages"],
+        ),
+        ProofItem(
+            "Names a potential reference",
+            keywords=["reference"],
+        ),
+        ProofItem(
+            "Names a champion",
+            keywords=["champion"],
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources = _gather(registry, calls, budget)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Find advocates in account %r. Cover: who uses the product "
+            "most, who praises it in Slack, who would make a good "
+            "reference, and any champion already known from the account "
+            "data." % account,
+        )
+        system = (
+            "You are the advocate finder for a customer success team. "
+            "You find champions and advocates. Name the people, cite the "
+            "evidence, and do not invent facts that are not in the "
+            "context."
+        )
+        text = llm.complete(prompt, system=system)
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            )
+        )
+
+
 class PlannedAgent(Agent):
     """A registered agent that is not implemented yet.
 
@@ -668,7 +745,7 @@ class PlannedAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All eight agents, keyed by name. Six implemented, two planned."""
+    """All eight agents, keyed by name. Seven implemented, one planned."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -676,12 +753,7 @@ def build_agents() -> dict[str, Agent]:
         "onboarding-guide": OnboardingGuideAgent(),
         "scout": ScoutAgent(),
         "qbr-builder": QBRBuilderAgent(),
-        "advocate-finder": PlannedAgent(
-            "advocate-finder",
-            "Advocate Finder",
-            "Finds happy customers who could advocate, reference, or review.",
-            ["advocate", "reference", "testimonial", "case study", "champion"],
-        ),
+        "advocate-finder": AdvocateFinderAgent(),
         "voice-of-customer": PlannedAgent(
             "voice-of-customer",
             "Voice of Customer",

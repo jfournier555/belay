@@ -13,7 +13,7 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 ```
 Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
-  -> Specialist agent (1 of 8, 6 implemented in v0.5)
+  -> Specialist agent (1 of 8, 7 implemented in v0.6)
   -> Tools (Salesforce + Slack, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
@@ -93,7 +93,7 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 | onboarding-guide | implemented | Drafts onboarding plans and first-value checklists. |
 | expansion-spotter | implemented | Finds expansion openings: usage gaps, new teams. |
 | qbr-builder | implemented | Drafts a quarterly business review: outcomes, adoption, risks. |
-| advocate-finder | planned | Finds happy customers who could advocate or reference. |
+| advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it. |
 | voice-of-customer | planned | Summarizes what customers are saying across sources. |
 
 ## Connectors
@@ -118,14 +118,14 @@ Calling the MCP servers from the harness via an MCP client (instead of
 in-process) is a phase-2 item. The tool functions are already written once
 and shared, so the cutover is a client, not a rewrite.
 
-## What is real vs scaffolded (v0.5 honesty)
+## What is real vs scaffolded (v0.6 honesty)
 
-**Real, tested (56 unit tests, all passing):**
+**Real, tested (58 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- Renewal desk, briefer, expansion spotter, onboarding guide, scout, and
-  qbr builder agents, end to end, in stub mode.
+- Renewal desk, briefer, expansion spotter, onboarding guide, scout, qbr
+  builder, and advocate finder agents, end to end, in stub mode.
 - Proof checklist: every agent self-checks its draft against a "done"
   checklist before queueing; failures are flagged in the draft metadata
   and shown in `approvals show`, never a block.
@@ -142,9 +142,8 @@ and shared, so the cutover is a client, not a rewrite.
   in the demo and the tests.
 
 **Scaffolded / planned, not built:**
-- Two of the eight agents (advocate-finder,
-  voice-of-customer). Registered, routable
-  in name only, `implemented=False`, and the router never sends them work.
+- One of the eight agents (voice-of-customer). Registered, routable
+  in name only, `implemented=False`, and the router never sends it work.
 - The Gong connector (see `connectors/gong/README.md`).
 - The dashboard (phase 2). V1 is the harness + connectors + approval
   queue. The dashboard is the UI the CSM operates from, and it needs
