@@ -1,5 +1,5 @@
-"""Tests for the agents: renewal desk, briefer, expansion spotter, and
-onboarding guide end to end, plus the proof checklist.
+"""Tests for the agents: renewal desk, briefer, expansion spotter,
+onboarding guide, and scout end to end, plus the proof checklist.
 
 These run the full loop with stub tools and the stub LLM, so no network
 and no credentials are needed. They prove the agent gathers context from
@@ -43,7 +43,13 @@ class TestAgents(unittest.TestCase):
         implemented = [n for n, a in AGENTS.items() if a.implemented]
         self.assertEqual(
             sorted(implemented),
-            ["briefer", "expansion-spotter", "onboarding-guide", "renewal-desk"],
+            [
+                "briefer",
+                "expansion-spotter",
+                "onboarding-guide",
+                "renewal-desk",
+                "scout",
+            ],
         )
 
     def test_renewal_desk_runs_and_cites_sources(self):
@@ -104,6 +110,50 @@ class TestAgents(unittest.TestCase):
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
         self.assertEqual(len(draft.proof), 4)
+
+    def test_scout_runs_and_cites_sources(self):
+        agent = AGENTS["scout"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            self.budget,
+        )
+        self.assertEqual(draft.agent, "scout")
+        self.assertIn("salesforce_get_account", draft.sources)
+        self.assertIn("salesforce_list_opportunities", draft.sources)
+        self.assertIn("salesforce_list_cases", draft.sources)
+        self.assertIn("slack_search_messages", draft.sources)
+        # The stub draft shows the gathered context and the task: the
+        # account, new stakeholders, and hiring signals.
+        self.assertIn("Acme Corp", draft.text)
+        self.assertIn("stakeholder", draft.text)
+        self.assertIn("hiring", draft.text)
+        # The proof checklist passes end to end in stub mode.
+        self.assertTrue(draft.proof_passed)
+        self.assertEqual(len(draft.proof), 4)
+
+    def test_scout_keyword_routes(self):
+        router = Router(agents=AGENTS, llm=None)
+        route = router.route({"text": "scout Acme Corp for new signals"})
+        self.assertEqual(route.agent, "scout")
+
+    def test_scout_proof_flags_missing_sources_when_budget_skips_tools(self):
+        # Stub tool costs: account 58, opportunities 83, cases 77,
+        # slack 153. A budget of 100 lets only the account call through,
+        # so the scout proof fails exactly the one source item.
+        agent = AGENTS["scout"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            TokenBudget(100),
+        )
+        self.assertEqual(draft.sources, ["salesforce_get_account"])
+        self.assertFalse(draft.proof_passed)
+        failed = [p for p in draft.proof if not p["passed"]]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(failed[0]["label"], "Names new opportunities")
 
     def test_onboarding_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)

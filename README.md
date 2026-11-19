@@ -13,7 +13,7 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 ```
 Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
-  -> Specialist agent (1 of 8, 4 implemented in v0.3)
+  -> Specialist agent (1 of 8, 5 implemented in v0.4)
   -> Tools (Salesforce + Slack, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
@@ -89,7 +89,7 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 |---|---|---|
 | renewal-desk | implemented | Drafts a renewal plan: health, risks, next steps. |
 | briefer | implemented | Drafts a pre-meeting brief: snapshot, changes, questions. |
-| scout | planned | Finds accounts showing expansion or risk signals. |
+| scout | implemented | Finds new information: stakeholders, org changes, hiring signals. |
 | onboarding-guide | implemented | Drafts onboarding plans and first-value checklists. |
 | expansion-spotter | implemented | Finds expansion openings: usage gaps, new teams. |
 | qbr-builder | planned | Drafts a quarterly business review from account data. |
@@ -118,14 +118,14 @@ Calling the MCP servers from the harness via an MCP client (instead of
 in-process) is a phase-2 item. The tool functions are already written once
 and shared, so the cutover is a client, not a rewrite.
 
-## What is real vs scaffolded (v0.3 honesty)
+## What is real vs scaffolded (v0.4 honesty)
 
-**Real, tested (51 unit tests, all passing):**
+**Real, tested (54 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- Renewal desk, briefer, expansion spotter, and onboarding guide agents,
-  end to end, in stub mode.
+- Renewal desk, briefer, expansion spotter, onboarding guide, and scout
+  agents, end to end, in stub mode.
 - Proof checklist: every agent self-checks its draft against a "done"
   checklist before queueing; failures are flagged in the draft metadata
   and shown in `approvals show`, never a block.
@@ -142,8 +142,8 @@ and shared, so the cutover is a client, not a rewrite.
   in the demo and the tests.
 
 **Scaffolded / planned, not built:**
-- Four of the eight agents (scout,
-  qbr-builder, advocate-finder, voice-of-customer). Registered, routable
+- Three of the eight agents (qbr-builder,
+  advocate-finder, voice-of-customer). Registered, routable
   in name only, `implemented=False`, and the router never sends them work.
 - The Gong connector (see `connectors/gong/README.md`).
 - The dashboard (phase 2). V1 is the harness + connectors + approval

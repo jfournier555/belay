@@ -4,7 +4,7 @@ The eight jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer.
 
-V1 implements four end to end:
+V1 implements five end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -15,12 +15,14 @@ V1 implements four end to end:
 - onboarding-guide: drafts an onboarding plan and a first-value checklist.
   The renewal gets decided in the first 60 days; first value is one
   workflow working. Ties to the Onboarding Playbook on jfournier.net.
+- scout: finds new information about an account: new stakeholders, org
+  changes, hiring signals, news, and new opportunities or risks.
 
-The other four are registered as planned: they have a name, description, and
+The other three are registered as planned: they have a name, description, and
 keywords so the router knows about them, but implemented=False, so the
 router never sends them work. A job that explicitly names one gets a clear
 "planned, not implemented yet" result. Build them in the same shape as the
-four below: gather() pulls context from the tool registry, then the LLM
+five below: gather() pulls context from the tool registry, then the LLM
 turns that context into a draft.
 
 Every agent follows the same contract:
@@ -483,6 +485,85 @@ class OnboardingGuideAgent(Agent):
         )
 
 
+class ScoutAgent(Agent):
+    """Finds new information about an account.
+
+    Gathers: account summary, open opportunities, open support cases, and
+    recent Slack signals. Drafts: new stakeholders and org changes, hiring
+    signals, news, and any new opportunities or risks in the account data
+    and Slack signals.
+    """
+
+    name = "scout"
+    display_name = "Scout"
+    description = (
+        "Finds new information: stakeholders, org changes, hiring signals."
+    )
+    keywords = [
+        "scout",
+        "signal",
+        "signals",
+        "watch",
+        "monitor",
+        "flag",
+        "stakeholder",
+        "hiring",
+        "news",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Covers new stakeholders",
+            keywords=["stakeholder"],
+        ),
+        ProofItem(
+            "Covers hiring signals",
+            keywords=["hiring"],
+        ),
+        ProofItem(
+            "Names new opportunities",
+            sources=["salesforce_list_opportunities"],
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources = _gather(registry, calls, budget)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Scout account %r for new information. Cover: new "
+            "stakeholders and org changes, hiring signals, news, and any "
+            "new opportunities or risks in the account data and Slack "
+            "signals." % account,
+        )
+        system = (
+            "You are the scout for a customer success team. "
+            "You find new information about accounts. Name what changed, "
+            "cite the signal, and do not invent facts that are not in "
+            "the context."
+        )
+        text = llm.complete(prompt, system=system)
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            )
+        )
+
+
 class PlannedAgent(Agent):
     """A registered agent that is not implemented yet.
 
@@ -507,18 +588,13 @@ class PlannedAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All eight agents, keyed by name. Four implemented, four planned."""
+    """All eight agents, keyed by name. Five implemented, three planned."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
         "expansion-spotter": ExpansionSpotterAgent(),
         "onboarding-guide": OnboardingGuideAgent(),
-        "scout": PlannedAgent(
-            "scout",
-            "Scout",
-            "Finds accounts showing expansion or risk signals.",
-            ["scout", "signal", "signals", "watch", "monitor", "flag"],
-        ),
+        "scout": ScoutAgent(),
         "qbr-builder": PlannedAgent(
             "qbr-builder",
             "QBR Builder",
