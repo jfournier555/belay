@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="880" viewBox="0 0 1200 880">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#5b9dff"/>
+    </marker>
+  </defs>
+
+  <!-- panel -->
+  <rect x="4" y="4" width="1192" height="872" rx="20" fill="#0b0c0e" stroke="#232a33" stroke-width="1.5"/>
+
+  <!-- title -->
+  <text x="600" y="58" text-anchor="middle" font-family="Inter, sans-serif" font-size="34" font-weight="700" fill="#ffffff" letter-spacing="6">BELAY</text>
+  <text x="600" y="86" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" fill="#8b949e">A post-sales AI harness. The model is the engine, the harness is the chassis.</text>
+
+  <!-- spokes (under nodes) -->
+  <g stroke="#5b9dff" stroke-width="2" opacity="0.55">
+    <line x1="600" y1="430" x2="600" y2="185"/>
+    <line x1="600" y1="430" x2="815" y2="310"/>
+    <line x1="600" y1="430" x2="815" y2="550"/>
+    <line x1="600" y1="430" x2="600" y2="675"/>
+    <line x1="600" y1="430" x2="385" y2="550"/>
+    <line x1="600" y1="430" x2="385" y2="310"/>
+  </g>
+
+  <!-- center: the AI model -->
+  <circle cx="600" cy="430" r="92" fill="#12233d" stroke="#5b9dff" stroke-width="2.5"/>
+  <text x="600" y="418" text-anchor="middle" font-family="Inter, sans-serif" font-size="24" font-weight="700" fill="#ffffff">AI MODEL</text>
+  <text x="600" y="446" text-anchor="middle" font-family="Inter, sans-serif" font-size="15" fill="#9ec5ff">Your LLM</text>
+  <text x="600" y="470" text-anchor="middle" font-family="Inter, sans-serif" font-size="13" fill="#8b949e">the engine</text>
+
+  <!-- node helper: rect 220x68 centered on (cx,cy) -->
+  <!-- 1 ROUTER (top) -->
+  <g>
+    <rect x="490" y="118" width="220" height="68" rx="10" fill="#161b22" stroke="#2d333b" stroke-width="1.5"/>
+    <circle cx="516" cy="152" r="13" fill="#5b9dff"/>
+    <text x="516" y="157" text-anchor="middle" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="#0b0c0e">1</text>
+    <text x="634" y="148" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">ROUTER</text>
+    <text x="634" y="170" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">picks the agent</text>
+  </g>
+
+  <!-- 2 SPECIALIST AGENTS (upper right) -->
+  <g>
+    <rect x="732" y="256" width="220" height="68" rx="10" fill="#161b22" stroke="#2d333b" stroke-width="1.5"/>
+    <circle cx="758" cy="290" r="13" fill="#5b9dff"/>
+    <text x="758" y="295" text-anchor="middle" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="#0b0c0e">2</text>
+    <text x="876" y="286" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">AGENTS</text>
+    <text x="876" y="308" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">8 specialists, one job each</text>
+  </g>
+
+  <!-- 3 TOOLS (lower right) -->
+  <g>
+    <rect x="732" y="536" width="220" height="68" rx="10" fill="#161b22" stroke="#2d333b" stroke-width="1.5"/>
+    <circle cx="758" cy="570" r="13" fill="#5b9dff"/>
+    <text x="758" y="575" text-anchor="middle" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="#0b0c0e">3</text>
+    <text x="876" y="566" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">TOOLS</text>
+    <text x="876" y="588" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">Salesforce · Slack · Gong</text>
+  </g>
+
+  <!-- 5 APPROVAL QUEUE (bottom) -->
+  <g>
+    <rect x="490" y="676" width="220" height="68" rx="10" fill="#161b22" stroke="#4cc38a" stroke-width="1.5"/>
+    <circle cx="516" cy="710" r="13" fill="#4cc38a"/>
+    <text x="516" y="715" text-anchor="middle" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="#0b0c0e">5</text>
+    <text x="634" y="706" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">APPROVAL QUEUE</text>
+    <text x="634" y="728" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">human approves first</text>
+  </g>
+
+  <!-- 4 PROOF CHECKLIST (lower left) -->
+  <g>
+    <rect x="248" y="536" width="220" height="68" rx="10" fill="#161b22" stroke="#2d333b" stroke-width="1.5"/>
+    <circle cx="274" cy="570" r="13" fill="#5b9dff"/>
+    <text x="274" y="575" text-anchor="middle" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="#0b0c0e">4</text>
+    <text x="392" y="566" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">PROOF CHECKLIST</text>
+    <text x="392" y="588" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">agent self-checks "done"</text>
+  </g>
+
+  <!-- TOKEN BUDGET (upper left) -->
+  <g>
+    <rect x="248" y="256" width="220" height="68" rx="10" fill="#161b22" stroke="#2d333b" stroke-width="1.5"/>
+    <text x="358" y="286" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">TOKEN BUDGET</text>
+    <text x="358" y="308" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">caps the spend per job</text>
+  </g>
+
+  <!-- job in / draft out -->
+  <text x="600" y="112" text-anchor="middle" font-family="Inter, sans-serif" font-size="13" fill="#8b949e">Job in: free text, or --agent + --account</text>
+  <text x="600" y="772" text-anchor="middle" font-family="Inter, sans-serif" font-size="13" fill="#4cc38a">Draft out only after a human says yes</text>
+
+  <!-- footer: agent names -->
+  <text x="600" y="812" text-anchor="middle" font-family="IBM Plex Mono, monospace" font-size="13" fill="#8b949e">renewal-desk · briefer · scout · onboarding-guide · expansion-spotter · qbr-builder · advocate-finder · voice-of-customer</text>
+  <text x="600" y="838" text-anchor="middle" font-family="Inter, sans-serif" font-size="12" fill="#5b9dff">value-finder planned · v0.8.0 · github.com/jfournier555/belay</text>
+</svg>
