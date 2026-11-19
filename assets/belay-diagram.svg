@@ -43,8 +43,8 @@
     <rect x="732" y="256" width="220" height="68" rx="10" fill="#161b22" stroke="#2d333b" stroke-width="1.5"/>
     <circle cx="758" cy="290" r="13" fill="#5b9dff"/>
     <text x="758" y="295" text-anchor="middle" font-family="Inter, sans-serif" font-size="14" font-weight="700" fill="#0b0c0e">2</text>
-    <text x="876" y="286" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">AGENTS</text>
-    <text x="876" y="308" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">8 specialists, one job each</text>
+    <text x="876" y="286" text-anchor="middle" font-family="Inter, sans-serif" font-size="16" font-weight="700" fill="#ffffff">SPECIALIST AGENTS</text>
+    <text x="876" y="308" text-anchor="middle" font-family="Inter, sans-serif" font-size="12.5" fill="#8b949e">one job each</text>
   </g>
 
   <!-- 3 TOOLS (lower right) -->
