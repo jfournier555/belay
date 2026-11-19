@@ -21,6 +21,8 @@ Job (free text or --agent + --account)
   -> Only an approved draft leaves the harness
 ```
 
+![Belay architecture: the AI model at the center, the harness around it.](assets/belay-diagram.png)
+
 Three rules, enforced in code:
 1. **Model-agnostic.** Any LLM that speaks the OpenAI-compatible chat API
    works: OpenAI, Ollama, vLLM, anything. Point `HARNESS_LLM_BASE_URL` at
