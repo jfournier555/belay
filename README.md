@@ -101,11 +101,11 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 | Agent | Target | What it will do |
 |---|---|---|
 | value-finder | v0.8.0 | Finds realized and unrealized value in money or time: what is delivered, what is not yet captured. |
-| risk-watcher | v2 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. |
-| escalation-manager | v2 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
-| competitive-defense | v2 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
-| stakeholder-mapper | v2 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. |
-| case-triage | v2 | Classifies incoming cases by severity and drafts the engineering bug report. |
+| risk-watcher | v1.1.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. |
+| escalation-manager | v1.2.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
+| competitive-defense | v1.3.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
+| stakeholder-mapper | v1.4.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. |
+| case-triage | v1.5.0 | Classifies incoming cases by severity and drafts the engineering bug report. |
 
 ## Connectors
 
@@ -156,9 +156,9 @@ and shared, so the cutover is a client, not a rewrite.
 **Scaffolded / planned, not built:**
 - value-finder (v0.8.0): realized and unrealized value in money or time.
   Then v1.0.0, the CLI complete.
-- v2 agent candidates: risk-watcher, escalation-manager,
+- New agents, planned: risk-watcher, escalation-manager,
   competitive-defense, stakeholder-mapper, case-triage. They ship as minor
-  releases in the v2 line, after the dashboard v2.0.0.
+  releases in the v1 line (v1.1.0–v1.5.0). The dashboard UI is v2.0.0.
 - The Gong connector (see `connectors/gong/README.md`).
 - The dashboard (phase 2). V1 is the harness + connectors + approval
   queue. The dashboard is the UI the CSM operates from, and it needs
