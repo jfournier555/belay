@@ -22,10 +22,14 @@ class TestRouter(unittest.TestCase):
         self.assertIsNone(result.agent)
         self.assertIsNotNone(result.error)
 
-    def test_explicit_planned_agent_is_not_routed(self):
-        result = self.router.route({"text": "anything", "agent": "voice-of-customer"})
-        self.assertIsNone(result.agent)
-        self.assertIn("planned", result.error)
+    def test_explicit_voice_of_customer_routes(self):
+        # All eight agents are implemented now, so an explicit request
+        # for the last one routes straight to it.
+        result = self.router.route(
+            {"text": "anything", "agent": "voice-of-customer"}
+        )
+        self.assertEqual(result.agent, "voice-of-customer")
+        self.assertIsNone(result.error)
 
     def test_keyword_renewal(self):
         result = self.router.route({"text": "draft a renewal plan, churn risk"})
@@ -39,16 +43,11 @@ class TestRouter(unittest.TestCase):
         result = self.router.route({"text": "find expansion openings"})
         self.assertEqual(result.agent, "expansion-spotter")
 
-    def test_keyword_planned_agent_defaults(self):
-        # "feedback" is a voice-of-customer keyword, but that agent is
-        # planned, so the router must not send work there. It falls back
-        # to the default briefer (low confidence) rather than misrouting.
+    def test_keyword_feedback_routes_to_voc(self):
         result = self.router.route(
             {"text": "summarize customer feedback for this account"}
         )
-        self.assertNotEqual(result.agent, "voice-of-customer")
-        self.assertEqual(result.agent, "briefer")
-        self.assertEqual(result.confidence, "low")
+        self.assertEqual(result.agent, "voice-of-customer")
 
     def test_empty_job_defaults_to_briefer(self):
         result = self.router.route({"text": ""})

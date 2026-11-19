@@ -1,13 +1,9 @@
-"""Tests for the agents: renewal desk, briefer, expansion spotter,
-onboarding guide, scout, qbr builder, and advocate finder end to end,
-plus the proof checklist.
+"""Tests for the agents: all eight end to end, plus the proof checklist.
 
 These run the full loop with stub tools and the stub LLM, so no network
 and no credentials are needed. They prove the agent gathers context from
 the registry, drafts, records its sources, and self-checks the draft
 against its proof checklist before the draft reaches the approval queue.
-The planned agents are also checked: they exist, are marked not
-implemented, and refuse to run.
 """
 
 import unittest
@@ -52,6 +48,7 @@ class TestAgents(unittest.TestCase):
                 "qbr-builder",
                 "renewal-desk",
                 "scout",
+                "voice-of-customer",
             ],
         )
 
@@ -113,6 +110,38 @@ class TestAgents(unittest.TestCase):
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
         self.assertEqual(len(draft.proof), 4)
+
+    def test_voice_of_customer_runs_and_cites_sources(self):
+        agent = AGENTS["voice-of-customer"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            self.budget,
+        )
+        self.assertEqual(draft.agent, "voice-of-customer")
+        self.assertIn("salesforce_list_cases", draft.sources)
+        self.assertIn("slack_search_messages", draft.sources)
+        # The voice of customer reads what customers say, not the account
+        # record or the pipeline.
+        self.assertNotIn("salesforce_get_account", draft.sources)
+        self.assertNotIn("salesforce_list_opportunities", draft.sources)
+        # The stub draft shows the gathered context and the task: the
+        # account, feature requests, pain points, and sentiment.
+        self.assertIn("Acme Corp", draft.text)
+        self.assertIn("feature", draft.text)
+        self.assertIn("pain", draft.text)
+        self.assertIn("sentiment", draft.text)
+        # The proof checklist passes end to end in stub mode.
+        self.assertTrue(draft.proof_passed)
+        self.assertEqual(len(draft.proof), 5)
+
+    def test_voc_keyword_routes(self):
+        router = Router(agents=AGENTS, llm=None)
+        route = router.route(
+            {"text": "summarize customer feedback for Acme Corp"}
+        )
+        self.assertEqual(route.agent, "voice-of-customer")
 
     def test_advocate_finder_runs_and_cites_sources(self):
         agent = AGENTS["advocate-finder"]
@@ -232,12 +261,6 @@ class TestAgents(unittest.TestCase):
         self.assertIn("salesforce_get_account", draft.sources)
         self.assertIn("slack_search_messages", draft.sources)
         self.assertIn("Acme Corp", draft.text)
-
-    def test_planned_agent_refuses_to_run(self):
-        agent = AGENTS["voice-of-customer"]
-        self.assertFalse(agent.implemented)
-        with self.assertRaises(NotImplementedError):
-            agent.run({}, self.registry, self.llm, self.budget)
 
     def test_extract_account_prefers_explicit(self):
         from harness.agents import _extract_account

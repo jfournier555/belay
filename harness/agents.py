@@ -4,7 +4,7 @@ The eight jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer.
 
-V1 implements seven end to end:
+V1 implements eight end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -22,13 +22,11 @@ V1 implements seven end to end:
   Turns the account picture into the QBR deck narrative.
 - advocate-finder: finds champions and advocates: who uses the product
   most, who praises it in Slack, who would make a good reference.
+- voice-of-customer: collects and synthesizes customer feedback: feature
+  requests, pain points, sentiment from cases and Slack, and the top
+  themes to take back to the product team.
 
-The other one is registered as planned: it has a name, description, and
-keywords so the router knows about it, but implemented=False, so the
-router never sends it work. A job that explicitly names it gets a clear
-"planned, not implemented yet" result. Build it in the same shape as the
-seven below: gather() pulls context from the tool registry, then the LLM
-turns that context into a draft.
+All eight are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -721,31 +719,85 @@ class AdvocateFinderAgent(Agent):
         )
 
 
-class PlannedAgent(Agent):
-    """A registered agent that is not implemented yet.
+class VoiceOfCustomerAgent(Agent):
+    """Collects and synthesizes customer feedback for an account.
 
-    Has a name, description, and keywords so the router knows about it,
-    but implemented=False, so it never receives work. Build it by
-    subclassing Agent and setting implemented=True, in the shape of
-    RenewalDeskAgent above.
+    Gathers: open support cases and recent Slack signals. Drafts:
+    feature requests, pain points, sentiment from cases and Slack, and
+    the top themes to take back to the product team.
     """
 
-    implemented = False
-
-    def __init__(self, name, display_name, description, keywords):
-        self.name = name
-        self.display_name = display_name
-        self.description = description
-        self.keywords = keywords
+    name = "voice-of-customer"
+    display_name = "Voice of Customer"
+    description = (
+        "Summarizes customer feedback: requests, pain points, sentiment, "
+        "themes."
+    )
+    keywords = [
+        "voice of customer",
+        "voc",
+        "feedback",
+        "sentiment",
+        "complaints",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names feature requests",
+            keywords=["feature"],
+        ),
+        ProofItem(
+            "Names pain points",
+            keywords=["pain"],
+        ),
+        ProofItem(
+            "Covers sentiment",
+            keywords=["sentiment"],
+        ),
+        ProofItem(
+            "Cites support cases",
+            sources=["salesforce_list_cases"],
+        ),
+        ProofItem(
+            "Cites Slack messages",
+            sources=["slack_search_messages"],
+        ),
+    ]
 
     def run(self, job, registry, llm, budget):
-        raise NotImplementedError(
-            "Agent %r is planned for a later release." % self.name
+        account = _extract_account(job)
+        calls = [
+            ("salesforce_list_cases", {"account": account}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources = _gather(registry, calls, budget)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Summarize the voice of the customer for account %r. Cover: "
+            "feature requests, pain points, sentiment from support cases "
+            "and Slack, and the top themes to take back to the product "
+            "team." % account,
+        )
+        system = (
+            "You are the voice of the customer for a customer success "
+            "team. You collect and synthesize customer feedback. Name the "
+            "themes, cite the evidence, and do not invent facts that are "
+            "not in the context."
+        )
+        text = llm.complete(prompt, system=system)
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            )
         )
 
 
 def build_agents() -> dict[str, Agent]:
-    """All eight agents, keyed by name. Seven implemented, one planned."""
+    """All eight agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -754,12 +806,7 @@ def build_agents() -> dict[str, Agent]:
         "scout": ScoutAgent(),
         "qbr-builder": QBRBuilderAgent(),
         "advocate-finder": AdvocateFinderAgent(),
-        "voice-of-customer": PlannedAgent(
-            "voice-of-customer",
-            "Voice of Customer",
-            "Summarizes what customers are saying across Slack, cases, and calls.",
-            ["voice of customer", "voc", "feedback", "sentiment", "complaints"],
-        ),
+        "voice-of-customer": VoiceOfCustomerAgent(),
     }
     return agents
 
