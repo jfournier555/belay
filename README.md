@@ -13,9 +13,10 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 ```
 Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
-  -> Specialist agent (1 of 8, 3 implemented in v0.2)
+  -> Specialist agent (1 of 8, 4 implemented in v0.3)
   -> Tools (Salesforce + Slack, summary-first results)
   -> Draft
+  -> Proof checklist (the agent self-checks "done" before queueing)
   -> Approval queue (a human approves, rejects, or edits)
   -> Only an approved draft leaves the harness
 ```
@@ -30,6 +31,17 @@ Three rules, enforced in code:
 3. **A human reads the draft, not the whole thread.** No agent output is
    sent, posted, or acted on directly. Every draft goes to the approval
    queue first.
+
+## Proof checklist
+
+Every agent defines what "done" looks like as a short checklist: the
+evidence its draft must contain, as required sources gathered and key
+points covered. After drafting, the agent self-checks its own output
+against the checklist before the draft reaches the approval queue. The
+results ride along in the draft metadata and show up in
+`approvals show`, so the human reviewer sees them. A failed item is a
+flag, never a block: the draft still goes to the queue either way, and
+human approval remains the final gate.
 
 ## Quick start
 
@@ -78,8 +90,8 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 | renewal-desk | implemented | Drafts a renewal plan: health, risks, next steps. |
 | briefer | implemented | Drafts a pre-meeting brief: snapshot, changes, questions. |
 | scout | planned | Finds accounts showing expansion or risk signals. |
-| onboarding-guide | planned | Drafts onboarding plans and first-value checklists. |
-| expansion-spotter | planned | Finds expansion openings: usage gaps, new teams. |
+| onboarding-guide | implemented | Drafts onboarding plans and first-value checklists. |
+| expansion-spotter | implemented | Finds expansion openings: usage gaps, new teams. |
 | qbr-builder | planned | Drafts a quarterly business review from account data. |
 | advocate-finder | planned | Finds happy customers who could advocate or reference. |
 | voice-of-customer | planned | Summarizes what customers are saying across sources. |
@@ -106,13 +118,17 @@ Calling the MCP servers from the harness via an MCP client (instead of
 in-process) is a phase-2 item. The tool functions are already written once
 and shared, so the cutover is a client, not a rewrite.
 
-## What is real vs scaffolded (v0.2 honesty)
+## What is real vs scaffolded (v0.3 honesty)
 
-**Real, tested (42 unit tests, all passing):**
+**Real, tested (51 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- Renewal desk, briefer, and expansion spotter agents, end to end, in stub mode.
+- Renewal desk, briefer, expansion spotter, and onboarding guide agents,
+  end to end, in stub mode.
+- Proof checklist: every agent self-checks its draft against a "done"
+  checklist before queueing; failures are flagged in the draft metadata
+  and shown in `approvals show`, never a block.
 - Salesforce and Slack MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
@@ -126,7 +142,7 @@ and shared, so the cutover is a client, not a rewrite.
   in the demo and the tests.
 
 **Scaffolded / planned, not built:**
-- Five of the eight agents (scout, onboarding-guide,
+- Four of the eight agents (scout,
   qbr-builder, advocate-finder, voice-of-customer). Registered, routable
   in name only, `implemented=False`, and the router never sends them work.
 - The Gong connector (see `connectors/gong/README.md`).

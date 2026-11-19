@@ -1,10 +1,12 @@
-"""Tests for the agents: renewal desk, briefer, and expansion spotter
-end to end.
+"""Tests for the agents: renewal desk, briefer, expansion spotter, and
+onboarding guide end to end, plus the proof checklist.
 
 These run the full loop with stub tools and the stub LLM, so no network
 and no credentials are needed. They prove the agent gathers context from
-the registry, drafts, and records its sources. The planned agents are
-also checked: they exist, are marked not implemented, and refuse to run.
+the registry, drafts, records its sources, and self-checks the draft
+against its proof checklist before the draft reaches the approval queue.
+The planned agents are also checked: they exist, are marked not
+implemented, and refuse to run.
 """
 
 import unittest
@@ -12,6 +14,7 @@ import unittest
 from connectors.salesforce.tools import salesforce_tools
 from connectors.slack.tools import slack_tools
 from harness import AGENTS, TokenBudget, ToolRegistry
+from harness.agents import Draft, ProofItem, check_proof
 from harness.config import Config
 from harness.llm import StubLLM
 from harness.router import Router
@@ -40,7 +43,7 @@ class TestAgents(unittest.TestCase):
         implemented = [n for n, a in AGENTS.items() if a.implemented]
         self.assertEqual(
             sorted(implemented),
-            ["briefer", "expansion-spotter", "renewal-desk"],
+            ["briefer", "expansion-spotter", "onboarding-guide", "renewal-desk"],
         )
 
     def test_renewal_desk_runs_and_cites_sources(self):
@@ -79,6 +82,33 @@ class TestAgents(unittest.TestCase):
         # demonstrably working.
         self.assertIn("Acme Corp", draft.text)
         self.assertIn("Expansion (50 seats)", draft.text)
+
+    def test_onboarding_guide_runs_and_cites_sources(self):
+        agent = AGENTS["onboarding-guide"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            self.budget,
+        )
+        self.assertEqual(draft.agent, "onboarding-guide")
+        self.assertIn("salesforce_get_account", draft.sources)
+        self.assertIn("salesforce_list_opportunities", draft.sources)
+        self.assertIn("salesforce_list_cases", draft.sources)
+        self.assertIn("slack_search_messages", draft.sources)
+        # The stub draft shows the gathered context and the task: the
+        # account, the first value workflow, and the 60-day horizon.
+        self.assertIn("Acme Corp", draft.text)
+        self.assertIn("first value", draft.text)
+        self.assertIn("60 days", draft.text)
+        # The proof checklist passes end to end in stub mode.
+        self.assertTrue(draft.proof_passed)
+        self.assertEqual(len(draft.proof), 4)
+
+    def test_onboarding_keyword_routes(self):
+        router = Router(agents=AGENTS, llm=None)
+        route = router.route({"text": "draft an onboarding plan for Acme Corp"})
+        self.assertEqual(route.agent, "onboarding-guide")
 
     def test_briefer_runs_and_cites_sources(self):
         agent = AGENTS["briefer"]
@@ -141,6 +171,134 @@ class TestAgents(unittest.TestCase):
             )
             self.assertEqual(item.status, "pending")
             self.assertEqual(len(queue.list_pending()), 1)
+        finally:
+            if os.path.exists(tmp.name):
+                os.unlink(tmp.name)
+
+
+class TestProofChecklist(unittest.TestCase):
+    def setUp(self):
+        self.registry = _stub_registry()
+        self.llm = StubLLM()
+        self.budget = TokenBudget(8000)
+
+    def _draft(self, text, sources):
+        return Draft(
+            text=text,
+            agent="test-agent",
+            job={},
+            sources=list(sources),
+        )
+
+    def test_proof_item_passes_when_evidence_present(self):
+        item = ProofItem(
+            "Names the renewal",
+            keywords=["renewal"],
+            sources=["salesforce_list_opportunities"],
+        )
+        result = item.check(
+            self._draft(
+                "The renewal is on 2027-02-15.",
+                ["salesforce_list_opportunities"],
+            )
+        )
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["label"], "Names the renewal")
+        self.assertEqual(result["detail"], "ok")
+
+    def test_proof_item_fails_with_detail_when_evidence_missing(self):
+        item = ProofItem(
+            "Names the renewal",
+            keywords=["renewal"],
+            sources=["salesforce_list_opportunities"],
+        )
+        result = item.check(self._draft("Nothing here.", []))
+        self.assertFalse(result["passed"])
+        self.assertIn("renewal", result["detail"])
+        self.assertIn("salesforce_list_opportunities", result["detail"])
+
+    def test_proof_item_keyword_match_is_case_insensitive(self):
+        item = ProofItem("Covers health", keywords=["Health"])
+        result = item.check(self._draft("account HEALTH looks fine.", []))
+        self.assertTrue(result["passed"])
+
+    def test_check_proof_returns_one_result_per_item(self):
+        checklist = [
+            ProofItem("First", keywords=["one"]),
+            ProofItem("Second", keywords=["two"]),
+        ]
+        results = check_proof(
+            checklist, self._draft("one two three", [])
+        )
+        self.assertEqual([r["label"] for r in results], ["First", "Second"])
+        self.assertTrue(all(r["passed"] for r in results))
+
+    def test_agent_run_attaches_passing_proof(self):
+        agent = AGENTS["renewal-desk"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            self.budget,
+        )
+        self.assertTrue(draft.proof_passed)
+        self.assertEqual(len(draft.proof), 4)
+        self.assertTrue(all(p["passed"] for p in draft.proof))
+
+    def test_proof_flags_missing_sources_when_budget_skips_tools(self):
+        # Stub tool costs: account 58, opportunities 83, cases 77,
+        # slack 153. A budget of 100 lets only the account call through,
+        # so the renewal desk proof fails exactly the two source items.
+        agent = AGENTS["renewal-desk"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            TokenBudget(100),
+        )
+        self.assertEqual(draft.sources, ["salesforce_get_account"])
+        self.assertFalse(draft.proof_passed)
+        failed = [p for p in draft.proof if not p["passed"]]
+        self.assertEqual(len(failed), 2)
+        labels = [p["label"] for p in failed]
+        self.assertIn("Names the open renewal opportunity", labels)
+        self.assertIn("Names open support cases", labels)
+
+    def test_proof_failure_does_not_block_the_draft(self):
+        # A failed proof item is a flag for the human reviewer, never a
+        # block: the draft still exists and still reaches the queue.
+        from harness import ApprovalQueue
+        import os
+        import tempfile
+
+        agent = AGENTS["renewal-desk"]
+        draft = agent.run(
+            {"account": "Acme Corp"},
+            self.registry,
+            self.llm,
+            TokenBudget(100),
+        )
+        self.assertFalse(draft.proof_passed)
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".json")
+        tmp.close()
+        os.unlink(tmp.name)
+        try:
+            queue = ApprovalQueue(tmp.name)
+            item = queue.submit(
+                agent=agent.name,
+                job={"account": "Acme Corp"},
+                draft=draft.text,
+                sources=draft.sources,
+                proof=draft.proof,
+            )
+            # The proof round-trips through the file-backed queue, so
+            # the reviewer sees it when they open the item.
+            reloaded = ApprovalQueue(tmp.name).get(item.id)
+            self.assertIsNotNone(reloaded)
+            self.assertEqual(len(reloaded.proof), 4)
+            self.assertFalse(
+                all(p["passed"] for p in reloaded.proof)
+            )
         finally:
             if os.path.exists(tmp.name):
                 os.unlink(tmp.name)

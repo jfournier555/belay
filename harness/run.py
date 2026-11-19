@@ -83,10 +83,20 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     queue = ApprovalQueue(config.approvals_file)
     item = queue.submit(
-        agent=agent.name, job=job, draft=draft.text, sources=draft.sources
+        agent=agent.name,
+        job=job,
+        draft=draft.text,
+        sources=draft.sources,
+        proof=draft.proof,
     )
     print("Draft submitted to the approval queue: %s" % item.id)
     print("Sources: %s" % (", ".join(draft.sources) or "none"))
+    if draft.proof:
+        passed = sum(1 for p in draft.proof if p.get("passed"))
+        print("Proof checklist: %d/%d passed" % (passed, len(draft.proof)))
+        for p in draft.proof:
+            if not p.get("passed"):
+                print("  FAIL: %s (%s)" % (p.get("label"), p.get("detail")))
     print("Estimated tokens: %d (budget %d)" % (draft.tokens_estimate, config.token_budget_per_job))
     if args.show:
         print("--- draft ---")
@@ -142,6 +152,12 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         if item.note:
             print("Note: %s" % item.note)
         print("Sources: %s" % (", ".join(item.sources) or "none"))
+        if item.proof:
+            passed = sum(1 for p in item.proof if p.get("passed"))
+            print("Proof checklist: %d/%d passed" % (passed, len(item.proof)))
+            for p in item.proof:
+                mark = "PASS" if p.get("passed") else "FAIL"
+                print("  %s: %s (%s)" % (mark, p.get("label"), p.get("detail")))
         print("Job: %s" % json.dumps(item.job))
         print("--- draft ---")
         print(item.draft)

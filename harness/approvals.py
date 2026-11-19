@@ -32,6 +32,7 @@ class ApprovalItem:
     job: dict
     draft: str
     sources: list[str] = field(default_factory=list)
+    proof: list[dict] = field(default_factory=list)
     status: str = "pending"  # pending | approved | rejected | edited
     created_at: str = field(default_factory=_now_iso)
     decided_at: str | None = None
@@ -48,6 +49,7 @@ class ApprovalItem:
             job=data.get("job", {}),
             draft=data["draft"],
             sources=data.get("sources", []),
+            proof=data.get("proof", []),
             status=data.get("status", "pending"),
             created_at=data.get("created_at", _now_iso()),
             decided_at=data.get("decided_at"),
@@ -89,7 +91,12 @@ class ApprovalQueue:
         os.replace(tmp, self.path)
 
     def submit(
-        self, agent: str, job: dict, draft: str, sources: list[str] | None = None
+        self,
+        agent: str,
+        job: dict,
+        draft: str,
+        sources: list[str] | None = None,
+        proof: list[dict] | None = None,
     ) -> ApprovalItem:
         """Put a new draft in the queue as pending. Returns the item."""
         item = ApprovalItem(
@@ -98,6 +105,7 @@ class ApprovalQueue:
             job=job,
             draft=draft,
             sources=list(sources or []),
+            proof=list(proof or []),
         )
         self._items[item.id] = item
         self._save()
