@@ -10,7 +10,7 @@ Public surface:
 - Router: cheap routing to the right specialist agent (router.py).
 - ToolRegistry: the tools agents may call, summary-first (registry.py).
 - ApprovalQueue: file-backed human review queue (approvals.py).
-- AGENTS: the eight specialist agents, five implemented in v0.4 (agents.py).
+- AGENTS: the eight specialist agents, six implemented in v0.5 (agents.py).
 - TokenBudget: per-job token budget enforcement (summarizer.py).
 """
 
@@ -43,4 +43,4 @@ __all__ = [
     "get_llm",
 ]
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"

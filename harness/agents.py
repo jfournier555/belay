@@ -4,7 +4,7 @@ The eight jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer.
 
-V1 implements five end to end:
+V1 implements six end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -17,12 +17,15 @@ V1 implements five end to end:
   workflow working. Ties to the Onboarding Playbook on jfournier.net.
 - scout: finds new information about an account: new stakeholders, org
   changes, hiring signals, news, and new opportunities or risks.
+- qbr-builder: drafts a quarterly business review: outcomes delivered,
+  adoption and value realized, open risks, and the plan for next quarter.
+  Turns the account picture into the QBR deck narrative.
 
-The other three are registered as planned: they have a name, description, and
+The other two are registered as planned: they have a name, description, and
 keywords so the router knows about them, but implemented=False, so the
 router never sends them work. A job that explicitly names one gets a clear
 "planned, not implemented yet" result. Build them in the same shape as the
-five below: gather() pulls context from the tool registry, then the LLM
+six below: gather() pulls context from the tool registry, then the LLM
 turns that context into a draft.
 
 Every agent follows the same contract:
@@ -564,6 +567,83 @@ class ScoutAgent(Agent):
         )
 
 
+class QBRBuilderAgent(Agent):
+    """Drafts a quarterly business review for an account.
+
+    Gathers: account summary, open opportunities, open support cases, and
+    recent Slack signals. Drafts: outcomes delivered this quarter, adoption
+    and value realized, open risks and support cases, and the plan for next
+    quarter. This is the agent that turns the account picture into the QBR
+    deck narrative: what was delivered, what it is worth, what is at risk,
+    and what happens next.
+    """
+
+    name = "qbr-builder"
+    display_name = "QBR Builder"
+    description = (
+        "Drafts a quarterly business review: outcomes, adoption, risks, "
+        "next quarter plan."
+    )
+    keywords = [
+        "qbr",
+        "business review",
+        "quarterly",
+        "ebr",
+        "executive review",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Covers outcomes delivered",
+            keywords=["outcome"],
+        ),
+        ProofItem(
+            "Covers adoption and value realized",
+            keywords=["adoption"],
+        ),
+        ProofItem(
+            "Covers the plan for next quarter",
+            keywords=["next quarter"],
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources = _gather(registry, calls, budget)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a quarterly business review for account %r. Cover: "
+            "outcomes delivered this quarter, adoption and value realized, "
+            "open risks and support cases, and the plan for next quarter." % account,
+        )
+        system = (
+            "You are the QBR builder for a customer success team. "
+            "You draft quarterly business reviews. Lead with outcomes, "
+            "name the risks, and do not invent numbers that are not in "
+            "the context."
+        )
+        text = llm.complete(prompt, system=system)
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            )
+        )
+
+
 class PlannedAgent(Agent):
     """A registered agent that is not implemented yet.
 
@@ -588,19 +668,14 @@ class PlannedAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All eight agents, keyed by name. Five implemented, three planned."""
+    """All eight agents, keyed by name. Six implemented, two planned."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
         "expansion-spotter": ExpansionSpotterAgent(),
         "onboarding-guide": OnboardingGuideAgent(),
         "scout": ScoutAgent(),
-        "qbr-builder": PlannedAgent(
-            "qbr-builder",
-            "QBR Builder",
-            "Drafts a quarterly business review from account data.",
-            ["qbr", "business review", "quarterly", "ebr", "executive review"],
-        ),
+        "qbr-builder": QBRBuilderAgent(),
         "advocate-finder": PlannedAgent(
             "advocate-finder",
             "Advocate Finder",

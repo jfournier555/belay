@@ -23,7 +23,7 @@ class TestRouter(unittest.TestCase):
         self.assertIsNotNone(result.error)
 
     def test_explicit_planned_agent_is_not_routed(self):
-        result = self.router.route({"text": "anything", "agent": "qbr-builder"})
+        result = self.router.route({"text": "anything", "agent": "advocate-finder"})
         self.assertIsNone(result.agent)
         self.assertIn("planned", result.error)
 
@@ -40,11 +40,11 @@ class TestRouter(unittest.TestCase):
         self.assertEqual(result.agent, "expansion-spotter")
 
     def test_keyword_planned_agent_defaults(self):
-        # "qbr" is a qbr-builder keyword, but that agent is planned, so
-        # the router must not send work there. It falls back to the
-        # default briefer (low confidence) rather than misrouting.
-        result = self.router.route({"text": "build a qbr for this account"})
-        self.assertNotEqual(result.agent, "qbr-builder")
+        # "advocate" is an advocate-finder keyword, but that agent is
+        # planned, so the router must not send work there. It falls back
+        # to the default briefer (low confidence) rather than misrouting.
+        result = self.router.route({"text": "find an advocate for this account"})
+        self.assertNotEqual(result.agent, "advocate-finder")
         self.assertEqual(result.agent, "briefer")
         self.assertEqual(result.confidence, "low")
 
