@@ -1,8 +1,8 @@
 """Salesforce MCP server.
 
 Exposes the Salesforce tools from tools.py as MCP tools, so any
-MCP-capable LLM can call them (Claude Desktop, the harness in phase 2,
-anything else that speaks MCP).
+MCP-capable client can call them (the harness in phase 2, or anything
+else that speaks MCP).
 
 Run it:
     python -m connectors.salesforce.server

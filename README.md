@@ -4,9 +4,7 @@
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
-Post-sales is a hard climb. Every account is a steep peak: the renewal, the expansion, proving the value is real. The reps climbing them are doing it with a full book and no rope. Belay is the rope and the harness. It is everything around the model: routing, tools, memory, approvals. The model is the engine, Belay is the chassis, and the dashboard (phase 2) is what post sales teams operate from. It keeps you from falling while you climb,
-
-Belay is the sequel to ["AI is taking the admin. The judgment is the job."](https://jfournier.net/articles/ai-admin-judgment/): the article's "the wiring is the job" productized.
+Post-sales is a hard climb. Every account is a steep peak: the renewal, the expansion, proving the value is real. The reps climbing them are doing it with a full book and no rope. Belay is the rope and the harness. It is everything around the model: routing, tools, memory, approvals. The model is the engine, Belay is the chassis, and the dashboard (phase 2) is what post sales teams operate from. It keeps you from falling while you climb.
 
 ## How it works
 
@@ -160,14 +158,6 @@ Wrap them in `server.py` with FastMCP. Register them in
 `harness/run.py` `build_registry()`. Add the env vars to `.env.example`.
 See `connectors/base.py` for the pattern, and `connectors/gong/README.md`
 for a worked example of what a planned connector looks like.
-
-## Related work
-
-- [MCP Readiness Checker](https://jfournier.net/tools/mcp-readiness/):
-  scores whether a team is ready to run agents against their data. Run
-  it before wiring this harness to a real org.
-- ["AI is taking the admin. The judgment is the job."](https://jfournier.net/articles/ai-admin-judgment/):
-  the positioning piece this harness follows from.
 
 ## License
 

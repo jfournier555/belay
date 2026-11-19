@@ -9,8 +9,8 @@ one is a copy of an existing one, not a new design:
                    returns a dict. No MCP code here. This is the one
                    implementation, shared by both interfaces below.
         server.py  FastMCP wrapper. Exposes the same functions as MCP
-                   tools, so any MCP-capable LLM (Claude Desktop, the
-                   harness in phase 2, anything else) can call them.
+                   tools, so any MCP-capable client (the harness in
+                   phase 2, or anything else) can call them.
 
 Two interfaces, one implementation:
 - In-process: the harness imports the tool functions and registers them
