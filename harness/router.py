@@ -1,8 +1,8 @@
 """Router: pick the right specialist agent for a job, cheaply.
 
-The router is the "1" in Kevin Lau's "1 router + 8 agents". Its job is to
-be cheap: it should cost almost nothing to decide who does the work, so the
-tokens go to the work itself.
+The router is the single entry point for the harness: one router, eight
+specialist agents. Its job is to be cheap: it should cost almost nothing
+to decide who does the work, so the tokens go to the work itself.
 
 Routing order, cheapest first:
 1. Explicit: the job names an agent. Use it. (No model call at all.)

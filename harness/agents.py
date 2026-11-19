@@ -1,9 +1,8 @@
-"""The specialist agents: the "8" in "1 router + 8 agents".
+"""The specialist agents: the eight post-sales jobs the harness covers.
 
-The eight jobs come from Kevin Lau's "Claude Customer Success Engine" post
-(Nov 9, 2026). Justin's verdict that day: the 8 jobs are the right 8 jobs.
-They are, in Lau's terms: scout, briefer, onboarding guide, expansion
-spotter, QBR builder, advocate finder, renewal desk, voice-of-customer.
+The eight jobs are the post-sales jobs that matter: scout, briefer,
+onboarding guide, expansion spotter, QBR builder, advocate finder,
+renewal desk, voice-of-customer.
 
 V1 implements four end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
