@@ -98,16 +98,29 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 | advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it. |
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
 
+## Planned architecture (v1.x)
+
+Architecture first, then agents. These ship as minor releases before the
+agent candidates below.
+
+| Piece | Target | What it will do |
+|---|---|---|
+| composition | v1.1.0 | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts. |
+| memory | v1.2.0 | Persistent memory across runs: past drafts, decisions, and corrections per account. |
+| write-back | v1.3.0 | The first write tools plus approval-gated execution. The Salesforce updater agent is the first use. |
+| scheduling | v1.4.0 | A daemon that runs the harness on its own, so watch agents actually watch. |
+| MCP client | v1.5.0 | A harness-side MCP client that picks up MCP servers the user already has connected. |
+
 ## Planned agents
 
 | Agent | Target | What it will do |
 |---|---|---|
 | value-finder | v0.8.0 | Finds realized and unrealized value in money or time: what is delivered, what is not yet captured. |
-| risk-watcher | v1.1.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. |
-| escalation-manager | v1.2.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
-| competitive-defense | v1.3.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
-| stakeholder-mapper | v1.4.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. |
-| case-triage | v1.5.0 | Classifies incoming cases by severity and drafts the engineering bug report. |
+| risk-watcher | v1.6.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. |
+| escalation-manager | v1.7.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
+| competitive-defense | v1.8.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
+| stakeholder-mapper | v1.9.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. |
+| case-triage | v1.10.0 | Classifies incoming cases by severity and drafts the engineering bug report. |
 
 ## Connectors
 
@@ -128,7 +141,7 @@ python -m connectors.slack.server
 ```
 
 Calling the MCP servers from the harness via an MCP client (instead of
-in-process) is a phase-2 item. The tool functions are already written once
+in-process) is a v1.5.0 item. The tool functions are already written once
 and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v0.7 honesty)
@@ -158,15 +171,18 @@ and shared, so the cutover is a client, not a rewrite.
 **Scaffolded / planned, not built:**
 - value-finder (v0.8.0): realized and unrealized value in money or time.
   Then v1.0.0, the CLI complete.
+- Architecture pieces, planned: composition, memory, write-back,
+  scheduling, MCP client. They ship first as minor releases in the v1
+  line (v1.1.0–v1.5.0).
 - New agents, planned: risk-watcher, escalation-manager,
   competitive-defense, stakeholder-mapper, case-triage. They ship as minor
-  releases in the v1 line (v1.1.0–v1.5.0). The dashboard UI is v2.0.0.
+  releases in the v1 line (v1.6.0–v1.10.0). The dashboard UI is v2.0.0.
 - The Gong connector (see `connectors/gong/README.md`).
 - The dashboard (phase 2). V1 is the harness + connectors + approval
   queue. The dashboard is the UI the CSM operates from, and it needs
   hosting or a local app. It is not in this repo yet.
-- The MCP client inside the harness (phase 2). V1 calls connector tools
-  in-process; the MCP servers are standalone.
+- The MCP client inside the harness (v1.5.0). Until then, v1 calls
+  connector tools in-process; the MCP servers are standalone.
 
 ## Adding a connector
 
