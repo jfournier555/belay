@@ -95,7 +95,7 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 | onboarding-guide | implemented | Drafts onboarding plans and first-value checklists. |
 | expansion-spotter | implemented | Finds expansion openings: usage gaps, new teams. |
 | qbr-builder | implemented | Drafts a quarterly business review: outcomes, adoption, risks. |
-| advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it. |
+| advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it, how much influence each carries. |
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
 
 ## Planned architecture (v1.x)
@@ -116,10 +116,10 @@ agent candidates below.
 | Agent | Target | What it will do |
 |---|---|---|
 | value-finder | v0.8.0 | Finds realized and unrealized value in money or time: what is delivered, what is not yet captured. |
-| risk-watcher | v1.6.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. |
+| risk-watcher | v1.6.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. When a champion leaves, it asks whether the org mandate changed. |
 | escalation-manager | v1.7.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
 | competitive-defense | v1.8.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
-| stakeholder-mapper | v1.9.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. |
+| stakeholder-mapper | v1.9.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. Records influence, not just titles. |
 | case-triage | v1.10.0 | Classifies incoming cases by severity and drafts the engineering bug report. |
 
 ## Connectors

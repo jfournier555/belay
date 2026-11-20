@@ -650,14 +650,18 @@ class AdvocateFinderAgent(Agent):
     Gathers: account summary, open support cases, and recent Slack
     signals. Drafts: who uses the product most, who praises it in Slack,
     who would make a good reference, and any champion already known from
-    the account data.
+    the account data. For each champion it assesses influence from
+    observable signals (who listens to them, defended spend, budget
+    control), never assumed, and flags whether a known champion has gone
+    quiet or left, naming the successor and what they care about if one
+    is known.
     """
 
     name = "advocate-finder"
     display_name = "Advocate Finder"
     description = (
         "Finds champions and advocates: who uses it most, who praises it, "
-        "who would reference."
+        "who would reference, and how much influence each carries."
     )
     keywords = [
         "advocate",
@@ -683,6 +687,10 @@ class AdvocateFinderAgent(Agent):
             "Names a champion",
             keywords=["champion"],
         ),
+        ProofItem(
+            "Names each champion's influence",
+            keywords=["influence"],
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -698,14 +706,19 @@ class AdvocateFinderAgent(Agent):
             context,
             "Find advocates in account %r. Cover: who uses the product "
             "most, who praises it in Slack, who would make a good "
-            "reference, and any champion already known from the account "
-            "data." % account,
+            "reference, any champion already known from the account "
+            "data, how much influence each champion carries (who listens "
+            "to them, have they defended spend, do they control budget), "
+            "and whether a known champion has gone quiet or left, naming "
+            "the successor and what they care about if one is known."
+            % account,
         )
         system = (
             "You are the advocate finder for a customer success team. "
             "You find champions and advocates. Name the people, cite the "
             "evidence, and do not invent facts that are not in the "
-            "context."
+            "context. Assess influence from evidence, not assumption: "
+            "name what shows each champion can move a decision."
         )
         text = llm.complete(prompt, system=system)
         return self._finish(

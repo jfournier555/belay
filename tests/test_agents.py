@@ -159,13 +159,15 @@ class TestAgents(unittest.TestCase):
         # people, not deals.
         self.assertNotIn("salesforce_list_opportunities", draft.sources)
         # The stub draft shows the gathered context and the task: the
-        # account, a potential reference, and a champion.
+        # account, a potential reference, a champion, and each champion's
+        # influence.
         self.assertIn("Acme Corp", draft.text)
         self.assertIn("reference", draft.text)
         self.assertIn("champion", draft.text)
+        self.assertIn("influence", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 4)
+        self.assertEqual(len(draft.proof), 5)
 
     def test_advocate_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)
