@@ -8,6 +8,7 @@ against its proof checklist before the draft reaches the approval queue.
 
 import unittest
 
+from connectors.champify.tools import champify_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.linear.tools import linear_tools
@@ -40,6 +41,8 @@ def _stub_registry() -> ToolRegistry:
     for tool in zendesk_tools(config):
         registry.register(tool)
     for tool in linear_tools(config):
+        registry.register(tool)
+    for tool in champify_tools(config):
         registry.register(tool)
     return registry
 
@@ -175,6 +178,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("salesforce_get_account", draft.sources)
         self.assertIn("salesforce_list_cases", draft.sources)
         self.assertIn("slack_search_messages", draft.sources)
+        self.assertIn("champify_list_job_changes", draft.sources)
         # The advocate finder does not pull opportunities: it looks for
         # people, not deals.
         self.assertNotIn("salesforce_list_opportunities", draft.sources)
@@ -187,7 +191,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("influence", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 6)
+        self.assertEqual(len(draft.proof), 7)
 
     def test_advocate_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)

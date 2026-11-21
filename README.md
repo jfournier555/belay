@@ -110,7 +110,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | onboarding-guide | implemented | Drafts onboarding plans and first-value checklists. |
 | expansion-spotter | implemented | Finds expansion openings: usage gaps, new teams. |
 | qbr-builder | implemented | Drafts a quarterly business review: outcomes, adoption, risks. |
-| advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it, how much influence each carries. |
+| advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it, how much influence each carries, and which champions changed jobs. |
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
 
 ## Dashboard
@@ -168,6 +168,7 @@ agent candidates below.
 | Zoom | v0.8.5 | `zoom_list_recordings`, `zoom_get_recording_summary`, `zoom_search_transcripts` |
 | Zendesk | v0.8.6 | `zendesk_list_tickets`, `zendesk_search_tickets`, `zendesk_get_ticket` |
 | Linear | v0.8.7 | `linear_list_issues`, `linear_search_issues`, `linear_get_issue` |
+| Champify | v0.8.8 | `champify_list_champions`, `champify_list_job_changes`, `champify_get_champion` |
 
 Each connector exposes its tools two ways, from one implementation
 (`tools.py`): in-process, through the harness tool registry (the v0.2 path),
@@ -203,7 +204,7 @@ and shared, so the cutover is a client, not a rewrite.
   links to the records it cites; failures are flagged in the draft
   metadata and shown in `approvals show`, never a block, and no
   aggregate score is shown anywhere.
-- Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, and Linear MCP servers: verified over the real MCP protocol
+- Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, and Champify MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
 - The dashboard (v0.8.0): local FastAPI server reading the live queue
@@ -216,13 +217,17 @@ and shared, so the cutover is a client, not a rewrite.
 - The live Salesforce REST/SOQL calls, the live Slack Web API calls,
   the live Gong REST API calls, the live HubSpot CRM API calls, the
   live Gmail API calls, the live Zoom API calls, the live Zendesk API
-  calls, and the live Linear GraphQL API calls. They are real code, written against the
+  calls, the live Linear GraphQL API calls, and the live Champify API calls. They are real code, written against the
   documented APIs, but no credentials were available while building
   v0.2 (Salesforce/Slack), v0.8.2 (Gong), v0.8.3 (HubSpot), v0.8.4
-  (Gmail), v0.8.5 (Zoom), v0.8.6 (Zendesk), or v0.8.7 (Linear), so they have not run against a real org, workspace, Gong
-  account, HubSpot portal, mailbox, Zoom account, Zendesk instance, or Linear workspace. Treat them as "written,
+  (Gmail), v0.8.5 (Zoom), v0.8.6 (Zendesk), v0.8.7 (Linear), or v0.8.8 (Champify), so they have not run against a real org, workspace, Gong
+  account, HubSpot portal, mailbox, Zoom account, Zendesk instance, Linear workspace, or Champify account. Treat them as "written,
   not verified" until someone runs them with real credentials. Stub mode
-  is what runs in the demo and the tests.
+  is what runs in the demo and the tests. One caveat, for Champify only:
+  Champify publishes no public API reference, so its endpoint shapes
+  are assumed from the product's data model, not from documentation,
+  and must be corrected against the real API the first time a key is
+  available.
 
 **Scaffolded / planned, not built:**
 - value-finder (v0.9.0): realized and unrealized value in money or time.

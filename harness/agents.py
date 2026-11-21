@@ -21,7 +21,8 @@ V1 implements eight end to end:
   adoption and value realized, open risks, and the plan for next quarter.
   Turns the account picture into the QBR deck narrative.
 - advocate-finder: finds champions and advocates: who uses the product
-  most, who praises it in Slack, who would make a good reference.
+  most, who praises it in Slack, who would make a good reference, and
+  which champions changed jobs.
 - voice-of-customer: collects and synthesizes customer feedback: feature
   requests, pain points, sentiment from cases, Slack, Zendesk tickets,
   and Gong call transcripts, and the top themes to take back to the
@@ -242,11 +243,27 @@ STUB_LINEAR_HOST = "https://linear.invalid"
 LINEAR_APP_HOST = "https://linear.app"
 
 
+# Champify champion links are built from the champion id:
+# https://app.champify.io/champions/{id}. Stub data links to the same
+# path on .invalid, so a stub link is well-formed but unmistakably fake.
+# The app URL shape is assumed: Champify publishes no public API
+# reference, so it has not been confirmed against documentation.
+STUB_CHAMPIFY_HOST = "https://app.champify.invalid"
+CHAMPIFY_APP_HOST = "https://app.champify.io"
+
+
 def _linear_base(result: dict) -> str:
     """The base URL for Linear deep links from a tool result."""
     if result.get("_stub"):
         return STUB_LINEAR_HOST
     return LINEAR_APP_HOST
+
+
+def _champify_base(result: dict) -> str:
+    """The base URL for Champify deep links from a tool result."""
+    if result.get("_stub"):
+        return STUB_CHAMPIFY_HOST
+    return CHAMPIFY_APP_HOST
 
 
 def _gmail_base(result: dict) -> str:
@@ -550,6 +567,49 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                         "label": "Linear %s: %s"
                         % (identifier, issue.get("title", "")),
                         "url": "%s/%s/issue/%s" % (base, team, identifier),
+                    }
+                )
+    elif tool_name in (
+        "champify_list_champions",
+        "champify_list_job_changes",
+        "champify_get_champion",
+    ):
+        base = _champify_base(result)
+        if tool_name == "champify_list_champions":
+            champions = result.get("champions", [])
+            for champion in champions:
+                if champion.get("id"):
+                    links.append(
+                        {
+                            "label": "Champify champion: %s"
+                            % champion.get("name", champion["id"]),
+                            "url": "%s/champions/%s"
+                            % (base, champion["id"]),
+                        }
+                    )
+        elif tool_name == "champify_list_job_changes":
+            for change in result.get("job_changes", []):
+                champion_id = change.get("champion_id") or change.get("id")
+                if champion_id:
+                    links.append(
+                        {
+                            "label": "Champify job change: %s (%s -> %s)"
+                            % (
+                                change.get("name", champion_id),
+                                change.get("previous_company", ""),
+                                change.get("new_company", ""),
+                            ),
+                            "url": "%s/champions/%s"
+                            % (base, champion_id),
+                        }
+                    )
+        else:
+            if result.get("id"):
+                links.append(
+                    {
+                        "label": "Champify champion: %s"
+                        % result.get("name", result["id"]),
+                        "url": "%s/champions/%s" % (base, result["id"]),
                     }
                 )
     return links
@@ -1144,14 +1204,16 @@ class QBRBuilderAgent(Agent):
 class AdvocateFinderAgent(Agent):
     """Finds champions and advocates in an account.
 
-    Gathers: account summary, open support cases, and recent Slack
-    signals. Drafts: who uses the product most, who praises it in Slack,
-    who would make a good reference, and any champion already known from
-    the account data. For each champion it assesses influence from
-    observable signals (who listens to them, defended spend, budget
-    control), never assumed, and flags whether a known champion has gone
-    quiet or left, naming the successor and what they care about if one
-    is known.
+    Gathers: account summary, open support cases, recent Slack
+    signals, and recent champion job changes. Drafts: who uses the
+    product most, who praises it in Slack, who would make a good
+    reference, and any champion already known from the account data.
+    For each champion it assesses influence from observable signals
+    (who listens to them, defended spend, budget control), never
+    assumed, and flags whether a known champion has gone quiet or
+    left, naming the successor and what they care about if one is
+    known. A champion who changed jobs is the departure signal: the
+    job-change record says when it happened and where they went.
     """
 
     name = "advocate-finder"
@@ -1177,6 +1239,10 @@ class AdvocateFinderAgent(Agent):
             sources=["slack_search_messages"],
         ),
         ProofItem(
+            "Cites recent champion job changes",
+            sources=["champify_list_job_changes"],
+        ),
+        ProofItem(
             "Names a potential reference",
             keywords=["reference"],
         ),
@@ -1200,6 +1266,7 @@ class AdvocateFinderAgent(Agent):
             ("salesforce_get_account", {"account": account}),
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
+            ("champify_list_job_changes", {"account": account, "days": 90}),
         ]
         context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
@@ -1208,8 +1275,10 @@ class AdvocateFinderAgent(Agent):
             "Find advocates in account %r. Cover: who uses the product "
             "most, who praises it in Slack, who would make a good "
             "reference, any champion already known from the account "
-            "data, how much influence each champion carries (who listens "
-            "to them, have they defended spend, do they control budget), "
+            "data, recent champion job changes (who moved, from where "
+            "to where, and whether a known champion left), how much "
+            "influence each champion carries (who listens to them, "
+            "have they defended spend, do they control budget), "
             "and whether a known champion has gone quiet or left, naming "
             "the successor and what they care about if one is known."
             % account,
@@ -1219,7 +1288,9 @@ class AdvocateFinderAgent(Agent):
             "You find champions and advocates. Name the people, cite the "
             "evidence, and do not invent facts that are not in the "
             "context. Assess influence from evidence, not assumption: "
-            "name what shows each champion can move a decision."
+            "name what shows each champion can move a decision. A "
+            "champion who changed jobs is a departure signal: name the "
+            "move, when it happened, and what it means for the account."
         )
         text = llm.complete(prompt, system=system)
         return self._finish(

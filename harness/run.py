@@ -26,6 +26,7 @@ import argparse
 import json
 import sys
 
+from connectors.champify.tools import champify_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.hubspot.tools import hubspot_tools
@@ -48,7 +49,7 @@ from harness import (
 
 def build_registry(config: Config) -> ToolRegistry:
     """Register the connector tools (Salesforce + Slack + Gong + HubSpot
-    + Gmail + Zoom + Zendesk + Linear).
+    + Gmail + Zoom + Zendesk + Linear + Champify).
 
     The CRM the agents gather from is Salesforce unless HubSpot is
     configured and Salesforce is not; then it is HubSpot. When both are
@@ -76,6 +77,8 @@ def build_registry(config: Config) -> ToolRegistry:
     for tool in zendesk_tools(config):
         registry.register(tool)
     for tool in linear_tools(config):
+        registry.register(tool)
+    for tool in champify_tools(config):
         registry.register(tool)
     return registry
 

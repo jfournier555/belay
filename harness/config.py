@@ -50,6 +50,10 @@ Environment variables:
     LINEAR_API_KEY           Linear API key (Settings > API > Personal
                              API keys). Auth is the raw key in the
                              Authorization header.
+    CHAMPIFY_API_KEY         Champify API key. Auth is the raw key as a
+                             Bearer token.
+    CHAMPIFY_API_BASE_URL    Champify API base URL. Default:
+                             https://api.champify.io/v1
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
@@ -87,6 +91,8 @@ class Config:
     zendesk_email: str | None = None
     zendesk_api_token: str | None = None
     linear_api_key: str | None = None
+    champify_api_key: str | None = None
+    champify_api_base_url: str = "https://api.champify.io/v1"
     approvals_file: str = "approvals.json"
     token_budget_per_job: int = 8000
 
@@ -125,6 +131,10 @@ class Config:
             zendesk_email=os.environ.get("ZENDESK_EMAIL") or None,
             zendesk_api_token=os.environ.get("ZENDESK_API_TOKEN") or None,
             linear_api_key=os.environ.get("LINEAR_API_KEY") or None,
+            champify_api_key=os.environ.get("CHAMPIFY_API_KEY") or None,
+            champify_api_base_url=os.environ.get(
+                "CHAMPIFY_API_BASE_URL", "https://api.champify.io/v1"
+            ),
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
@@ -194,3 +204,7 @@ class Config:
     def linear_configured(self) -> bool:
         """True when a Linear API key is present and stub mode is off."""
         return bool(self.linear_api_key and not self.stub_mode)
+
+    def champify_configured(self) -> bool:
+        """True when a Champify API key is present and stub mode is off."""
+        return bool(self.champify_api_key and not self.stub_mode)

@@ -159,6 +159,15 @@ def source_statuses(config: Config) -> list[dict]:
                 else "No credentials: stub data."
             ),
         },
+        {
+            "name": "Champify",
+            "status": "live" if config.champify_configured() else "stub",
+            "detail": (
+                "Connected."
+                if config.champify_configured()
+                else "No credentials: stub data."
+            ),
+        },
     ]
 
 
