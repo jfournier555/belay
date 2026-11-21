@@ -14,16 +14,15 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 git clone https://github.com/jfournier555/belay.git
 cd belay
 python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-pip install -e .
+.venv/bin/pip install -r requirements.txt
+.venv/bin/pip install -e .
 cp .env.example .env
 ```
 
-Python 3.11 or newer. The demo needs no credentials and no network: stub data plus the stub LLM.
+Python 3.11 or newer. The demo needs no credentials and no network: stub data plus the stub LLM. The commands below call the venv binaries directly (`.venv/bin/python`), so they work in bash, zsh, and fish alike with no activation step. If you prefer to activate the venv, use `source .venv/bin/activate` in bash/zsh or `source .venv/bin/activate.fish` in fish; plain `python` then works, but the bare `activate` script is bash syntax and fails in fish.
 
 ```bash
-python -m harness.run run --agent renewal-desk --account "Acme Corp" --stub --show
+.venv/bin/python -m harness.run run --agent renewal-desk --account "Acme Corp" --stub --show
 ```
 
 The account is the unit: every run names one account, and every agent works from it. Connect each source once in `.env`; there is no per-agent or per-subaccount setup, subaccounts follow the account hierarchy in your CRM.
@@ -109,7 +108,9 @@ python -m harness.run run --agent value-finder --account "Acme Corp" --stub --ho
 python -m harness.run agents
 python -m harness.run tools
 
-# Review and approve the draft.
+# Review and approve the draft. <id> is a placeholder: copy a real
+# draft id from `approvals list` (in fish, typing <id> literally
+# errors, since < is a redirect).
 python -m harness.run approvals list
 python -m harness.run approvals show <id>
 python -m harness.run approvals approve <id>
