@@ -103,7 +103,7 @@ python -m harness.run run --text "draft a renewal plan for Acme Corp" --stub
 # HARNESS_LOADED_HOURLY_RATE in the environment.
 python -m harness.run run --agent value-finder --account "Acme Corp" --stub --hourly-rate 150 --hours-saved 10 --show
 
-# See the eleven agents and the registered tools.
+# See the twelve agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
 
@@ -132,7 +132,7 @@ Then run without `--stub`:
 python -m harness.run run --agent renewal-desk --account "Acme Corp"
 ```
 
-## The eleven agents
+## The twelve agents
 
 Each agent owns one job, not a schedule. Cadence is the scheduler
 (v1.4.0), a separate architecture piece.
@@ -150,6 +150,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | value-finder | implemented | Finds realized and unrealized outcomes in money or time: time saved, revenue protected, gaps not yet captured. Every dollar figure is labeled measured or modeled with its basis. |
 | salesforce-updater | implemented | Drafts Salesforce changes for approval: field changes, activity logs, stage moves. The draft carries a dry-run preview (old -> new) and the write plan; nothing applies until a human approves it. |
 | risk-watcher | implemented | Watches for churn signals: champion departure, ticket spikes, stalled renewals, sponsor disengagement. Drafts a risk brief with signals ranked by severity (harness-computed), evidence, and a next step. On champion departure it asks whether the mandate changed, who the successor is, and what the successor's priorities are. With no signals the draft is a clean bill. Composes from prior renewal-desk, advocate-finder, and voice-of-customer drafts when they exist; gathers directly otherwise. |
+| escalation-manager | implemented | Owns escalations end to end: drafts the escalation plan (situation with evidence, people to loop in, the ask, exec update and customer comms as drafts, fallback if it does not land) for high-severity signals, and tracks each escalation open, escalated, resolved in one file per signal per account. A second run for the same signal drafts a status note, not a second plan; approving a plan moves its record to escalated; a resolved record stays resolved. Composes from prior risk-watcher, renewal-desk, and voice-of-customer drafts when they exist; gathers directly otherwise. |
 
 ## Composition
 
@@ -171,6 +172,12 @@ advocate-finder, and voice-of-customer exist for the account, the risk
 brief is built from those drafts; only the fresh risk signals (account
 record, champion job changes, champion list, Zendesk tickets, Salesforce
 cases) are gathered directly.
+
+The third use is escalation-manager. When prior drafts from
+risk-watcher, renewal-desk, and voice-of-customer exist for the account,
+the escalation plan is built from those drafts; only the fresh
+escalation signals (account record, opportunities, cases, champion job
+changes, champion list, Zendesk tickets) are gathered directly.
 
 ## Memory
 
@@ -227,6 +234,41 @@ write reports what would change and changes nothing; the result is
 marked simulated, so a demo can never be mistaken for a real change.
 Editing a write draft's text does not change its write plan; to change
 what will execute, re-run the updater.
+
+## Escalations
+
+Escalation-manager owns escalations end to end. When a high-severity
+signal fires (from a risk-watcher brief or from its own gather), it
+drafts the escalation plan: the situation with evidence and deep links,
+the people to loop in (account owner, active champions), the ask, the
+exec update and the customer comms as drafts, and what happens if it
+does not land. The plan, the ask, and the fallback are harness-written,
+never model prose.
+
+One record per signal per account lives in the escalation store
+(`escalations.json`, `HARNESS_ESCALATIONS_FILE` to move it), with three
+states: open, escalated, resolved. A second run for the same signal
+drafts a status note, not a second plan. Approving a plan in the queue
+moves its records to escalated. A rejected plan leaves its records
+open: the human rejected the plan, not the risk, so the next run may
+draft again (the rejection is in memory, so the next draft knows).
+Resolving is a human decision only, two paths: the `escalations
+resolve` command, or approving a closure draft the agent wrote when the
+signal was no longer detected in a fresh gather. A resolved record
+stays resolved even if the signal fires again, and the agent never
+resolves a record on its own.
+
+```bash
+# Draft an escalation plan for the account's high-severity signals.
+python -m harness.run run --agent escalation-manager --account "Acme Corp" --stub --show
+
+# See the escalation records and their states.
+python -m harness.run escalations list
+python -m harness.run escalations show <id>
+
+# Close one out, once the underlying issue is fixed.
+python -m harness.run escalations resolve <id>
+```
 
 ## Scheduling
 
@@ -355,7 +397,7 @@ agent candidates below.
 | Agent | Target | What it will do |
 |---|---|---|
 | risk-watcher | v1.6.0 (shipped) | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. When a champion leaves, it asks whether the org mandate changed, names the successor question, and validates the successor's priorities. |
-| escalation-manager | v1.7.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
+| escalation-manager | v1.7.0 (shipped) | Owns escalations end to end: drafts the escalation plan (situation, people, ask, exec update, customer comms, fallback) for high-severity signals, and tracks each escalation open, escalated, resolved, one record per signal per account. |
 | competitive-defense | v1.8.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
 | stakeholder-mapper | v1.9.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. Records influence, not just titles. |
 | case-triage | v1.10.0 | Classifies incoming cases by severity and drafts the engineering bug report. |
@@ -398,14 +440,14 @@ in-process connector tools.
 
 ## What is real vs scaffolded (v1.0.0 honesty)
 
-**Real, tested (414 unit tests, all passing):**
+**Real, tested (436 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- All eleven agents, end to end, in stub mode: renewal desk, briefer,
+- All twelve agents, end to end, in stub mode: renewal desk, briefer,
   expansion spotter, onboarding guide, scout, qbr builder, advocate
-  finder, voice of customer, value finder, Salesforce updater, and risk
-  watcher.
+  finder, voice of customer, value finder, Salesforce updater, risk
+  watcher, and escalation manager.
 - Write-back: the updater agent drafts changes with a harness-computed
   dry-run preview; only an approved write draft executes, exactly once
   per change, and rejected drafts never execute; stub writes simulate
@@ -456,10 +498,9 @@ in-process connector tools.
 **Scaffolded / planned, not built:**
 - Architecture pieces, shipped: composition (v1.1.0), memory (v1.2.0),
   write-back (v1.3.0), scheduling (v1.4.0), MCP client (v1.5.0).
-- New agents, shipped: risk-watcher (v1.6.0).
-- New agents, planned: escalation-manager, competitive-defense,
-  stakeholder-mapper, case-triage. They ship as minor releases in the
-  v1 line (v1.7.0–v1.10.0).
+- New agents, shipped: risk-watcher (v1.6.0), escalation-manager (v1.7.0).
+- New agents, planned: competitive-defense, stakeholder-mapper,
+  case-triage. They ship as minor releases in the v1 line (v1.8.0–v1.10.0).
 
 ## Adding a connector
 

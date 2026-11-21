@@ -17,6 +17,8 @@ approvals.json
 approvals.json.tmp
 memory.json
 memory.json.tmp
+escalations.json
+escalations.json.tmp
 mcp-servers.json
 mcp-servers.json.tmp
 

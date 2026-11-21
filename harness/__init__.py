@@ -11,12 +11,14 @@ Public surface:
 - ToolRegistry: the tools agents may call, summary-first (registry.py).
 - ApprovalQueue: file-backed human review queue (approvals.py).
 - AccountMemory: per-account memory across runs (memory.py).
+- EscalationStore: escalation state per signal per account
+  (escalations.py).
 - ScheduleStore: scheduled jobs, file-backed (scheduler.py).
 - MCPServerStore: external MCP servers, file-backed (mcp_client.py).
 - MCPClient: speaks MCP to an external server, stdio or SSE.
 - load_external_tools: register an external server's tools in the
   registry, namespaced by server (mcp_client.py).
-- AGENTS: the ten specialist agents, all implemented (agents.py).
+- AGENTS: the twelve specialist agents, all implemented (agents.py).
 - TokenBudget: per-job token budget enforcement (summarizer.py).
 """
 
@@ -25,6 +27,7 @@ from __future__ import annotations
 from .agents import AGENTS, Agent, Draft
 from .approvals import ApprovalItem, ApprovalQueue
 from .config import Config
+from .escalations import EscalationRecord, EscalationStore
 from .llm import LLMClient, OpenAICompatibleLLM, StubLLM, get_llm
 from .mcp_client import (
     MCPClient,
@@ -58,6 +61,8 @@ __all__ = [
     "ApprovalQueue",
     "Config",
     "Draft",
+    "EscalationRecord",
+    "EscalationStore",
     "LLMClient",
     "MCPClient",
     "MCPServerConfig",
@@ -86,4 +91,4 @@ __all__ = [
     "select_external_tools",
 ]
 
-__version__ = "1.6.0"
+__version__ = "1.7.0"

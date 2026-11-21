@@ -83,11 +83,18 @@ class ApprovalQueue:
     it. Memory never breaks the queue: a failed record is swallowed
     here, and a queue built without a store behaves exactly as
     before.
+
+    Takes an optional EscalationStore (v1.7.0): when one is attached,
+    approving an escalation-manager draft moves its escalation
+    records (open -> escalated) and resolves the records its closure
+    section names. A failed transition is swallowed the same way:
+    the queue decision stands either way.
     """
 
-    def __init__(self, path: str = "approvals.json", memory=None) -> None:
+    def __init__(self, path: str = "approvals.json", memory=None, escalations=None) -> None:
         self.path = path
         self.memory = memory
+        self.escalations = escalations
         self._items: dict[str, ApprovalItem] = {}
         self._load()
 
@@ -174,6 +181,21 @@ class ApprovalQueue:
         except Exception:
             return
 
+    def _escalation_outcome(self, item: ApprovalItem) -> None:
+        """Move escalation records on an approved escalation-manager
+        draft (v1.7.0): its records go open -> escalated, and the
+        records its closure section names go to resolved. A failed
+        transition never breaks the queue decision."""
+        if self.escalations is None or item.agent != "escalation-manager":
+            return
+        try:
+            for record_id in item.job.get("escalation_records", []) or []:
+                self.escalations.mark_escalated(str(record_id))
+            for record_id in item.job.get("escalation_resolve", []) or []:
+                self.escalations.resolve(str(record_id))
+        except Exception:
+            return
+
     def _decide(
         self, item_id: str, status: str, note: str | None
     ) -> ApprovalItem:
@@ -185,6 +207,8 @@ class ApprovalQueue:
         item.note = note
         self._save()
         self._remember(item, status)
+        if status == "approved":
+            self._escalation_outcome(item)
         return item
 
     def record_execution(

@@ -124,8 +124,8 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 
 class TestRiskWatcherRegistered(unittest.TestCase):
-    def test_eleven_agents_registered(self):
-        self.assertEqual(len(AGENTS), 11)
+    def test_twelve_agents_registered(self):
+        self.assertEqual(len(AGENTS), 12)
         agent = AGENTS["risk-watcher"]
         self.assertTrue(agent.implemented)
         self.assertEqual(agent.display_name, "Risk Watcher")

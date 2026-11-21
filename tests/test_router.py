@@ -23,7 +23,7 @@ class TestRouter(unittest.TestCase):
         self.assertIsNotNone(result.error)
 
     def test_explicit_voice_of_customer_routes(self):
-        # All eleven agents are implemented now, so an explicit request
+        # All twelve agents are implemented now, so an explicit request
         # for the last one routes straight to it.
         result = self.router.route(
             {"text": "anything", "agent": "voice-of-customer"}

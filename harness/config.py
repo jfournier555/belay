@@ -70,6 +70,12 @@ Environment variables:
                              name, transport (stdio or sse), command
                              and args, or url. A missing file means no
                              external servers.
+    HARNESS_ESCALATIONS_FILE
+                             Path to the escalation-state JSON file
+                             (v1.7.0). Default: escalations.json (in
+                             the working dir). One record per risk
+                             signal per account: open, escalated,
+                             resolved.
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
     HARNESS_LOADED_HOURLY_RATE
                              Loaded hourly rate in dollars, used by
@@ -132,6 +138,7 @@ class Config:
     memory_file: str = "memory.json"
     schedules_file: str = "schedules.json"
     mcp_servers_file: str = "mcp-servers.json"
+    escalations_file: str = "escalations.json"
     token_budget_per_job: int = 8000
     loaded_hourly_rate: float | None = None
 
@@ -183,6 +190,9 @@ class Config:
             ),
             mcp_servers_file=os.environ.get(
                 "HARNESS_MCP_SERVERS_FILE", "mcp-servers.json"
+            ),
+            escalations_file=os.environ.get(
+                "HARNESS_ESCALATIONS_FILE", "escalations.json"
             ),
             token_budget_per_job=int(
                 os.environ.get("HARNESS_TOKEN_BUDGET", "8000")

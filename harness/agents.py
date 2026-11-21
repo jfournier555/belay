@@ -1,11 +1,11 @@
-"""The specialist agents: the eleven post-sales jobs the harness covers.
+"""The specialist agents: the twelve post-sales jobs the harness covers.
 
-The eleven jobs are the post-sales jobs that matter: scout, briefer,
+The twelve jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
-renewal desk, voice-of-customer, value-finder, salesforce-updater, and
-risk-watcher.
+renewal desk, voice-of-customer, value-finder, salesforce-updater,
+risk-watcher, and escalation-manager.
 
-V1 implements eleven end to end:
+V1 implements twelve end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -47,8 +47,20 @@ V1 implements eleven end to end:
   mandate change, who is the successor, what are the successor's
   priorities and do they hold real influence. With no signals the draft
   is a clean bill, stated as such.
+- escalation-manager: owns escalations end to end. When a high-severity
+  signal fires (from a risk-watcher brief or from its own gather), it
+  drafts the escalation plan: the situation with evidence and deep
+  links, who to loop in and why, the ask, the exec update and the
+  customer comms as drafts, and what happens if it does not land. The
+  plan and the ask are harness-written, never model prose. One record
+  per signal per account in the escalation store (open, escalated,
+  resolved): a second run for the same signal drafts a status note,
+  not a second plan; approving a plan moves its record to escalated;
+  a resolved record stays resolved. Resolving is a human decision:
+  the `escalations resolve` command, or approving a closure draft the
+  agent wrote when the signal was no longer detected.
 
-All eleven are implemented. Every job in the harness has a working agent.
+All twelve are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -74,6 +86,7 @@ import re
 from dataclasses import dataclass, field
 
 from .approvals import ApprovalQueue
+from .escalations import EscalationStore
 from .llm import LLMClient
 from .mcp_client import build_external_calls
 from .memory import AccountMemory
@@ -2267,6 +2280,8 @@ def _risk_signals(results: dict, account: str, today=None) -> list[dict]:
             {
                 "severity": "high",
                 "kind": "champion-departure",
+                "key": "champion-departure:%s"
+                % str(change.get("name", "?")).lower(),
                 "text": (
                     "Champion departure: %s left %s (%s) for %s (%s) "
                     "on %s."
@@ -2352,11 +2367,12 @@ def _risk_signals(results: dict, account: str, today=None) -> list[dict]:
                 record.get("age_days", "?"),
             )
         )
-    for group in groups.values():
+    for group_key, group in groups.items():
         signals.append(
             {
                 "severity": group["severity"],
                 "kind": "support-delivery",
+                "key": "support-delivery:" + group_key,
                 "text": (
                     "Support/delivery risk: %r is open in %d place(s): "
                     "%s."
@@ -2392,6 +2408,8 @@ def _risk_signals(results: dict, account: str, today=None) -> list[dict]:
                 {
                     "severity": "high",
                     "kind": "renewal-stalled",
+                    "key": "renewal-stalled:%s"
+                    % str(opp.get("name", "?")).lower(),
                     "text": (
                         "Renewal stalled: %s (%s) passed its close date "
                         "%s and is still open."
@@ -2410,6 +2428,8 @@ def _risk_signals(results: dict, account: str, today=None) -> list[dict]:
                 {
                     "severity": "medium",
                     "kind": "renewal-closing",
+                    "key": "renewal-closing:%s"
+                    % str(opp.get("name", "?")).lower(),
                     "text": (
                         "Renewal closing soon: %s (%s) closes %s, %d "
                         "day(s) out, still open."
@@ -2447,6 +2467,8 @@ def _risk_signals(results: dict, account: str, today=None) -> list[dict]:
                     {
                         "severity": "medium",
                         "kind": "escalation-language",
+                        "key": "escalation-language:%s:%s"
+                        % (tool_name, hit),
                         "text": (
                             "Escalation language in %s (%r): %r"
                             % (label, hit, excerpt[:120])
@@ -2730,8 +2752,588 @@ class RiskWatcherAgent(Agent):
         )
 
 
+# The three agents whose drafts escalation-manager composes from
+# (v1.7.0): risk-watcher first (its brief is the escalation's
+# trigger), plus renewal-desk and voice-of-customer.
+_ESCALATION_SOURCE_AGENTS = ("risk-watcher", "renewal-desk", "voice-of-customer")
+
+
+def _escalation_store(job: dict) -> EscalationStore:
+    """The escalation store for a job. The file the job names, or an
+    in-memory store when it names none: a direct agent call in a test
+    never touches the working directory."""
+    path = job.get("escalations_file")
+    return EscalationStore(path) if path else EscalationStore(None)
+
+
+def _pending_escalation_record_ids(job: dict, account: str) -> set[str]:
+    """Record ids on escalation-manager drafts still pending in the
+    queue for this account. A plan awaiting a human decision is a
+    duplicate in waiting: the next run must not draft another plan
+    for the same signal while it sits undecided."""
+    path = job.get("approvals_file")
+    if not path:
+        return set()
+    try:
+        queue = ApprovalQueue(path)
+    except Exception:
+        return set()
+    ids: set[str] = set()
+    for item in queue.list_pending():
+        if item.agent != "escalation-manager":
+            continue
+        if _extract_account(item.job) != account:
+            continue
+        for record_id in item.job.get("escalation_records", []) or []:
+            ids.add(str(record_id))
+    return ids
+
+
+def _escalation_ask(signal: dict) -> str:
+    """The ask for one high-severity signal, harness-written per kind."""
+    kind = signal.get("kind", "")
+    if kind == "champion-departure":
+        return (
+            "Confirm with the account whether the mandate that bought "
+            "the product changed, and who picks it up now."
+        )
+    if kind == "support-delivery":
+        return (
+            "Get a named owner and a fix date for the issue, and a "
+            "status update the CSM can send the customer."
+        )
+    if kind == "renewal-stalled":
+        return (
+            "Confirm whether the renewal is still alive, who owns the "
+            "close, and what the real close date is."
+        )
+    return "Confirm who owns this signal and what the next step is."
+
+
+def _escalation_fallback(signal: dict) -> str:
+    """What happens if the ask does not land, harness-written per kind."""
+    kind = signal.get("kind", "")
+    if kind == "champion-departure":
+        return (
+            "If the mandate is gone, the save plan becomes an exit "
+            "plan: protect the exit, keep the relationship, stop "
+            "spending save effort on a dead deal."
+        )
+    if kind == "support-delivery":
+        return (
+            "If no owner or fix date lands, take it to the account's "
+            "executive sponsor with the case history attached."
+        )
+    if kind == "renewal-stalled":
+        return (
+            "If the renewal is dead, close it out honestly and move "
+            "the effort to the next renewal."
+        )
+    return "If nothing lands, re-raise it with the account's sponsor."
+
+
+def _people_to_loop_in(results: dict) -> list[str]:
+    """Who to loop in, from the gathered records: the account owner
+    and the active champions, with their roles. Only people the
+    records name; nobody is invented."""
+    people: list[str] = []
+    account = results.get("salesforce_get_account") or {}
+    owner = account.get("owner")
+    if owner:
+        people.append("%s (account owner, Salesforce)" % owner)
+    champions = results.get("champify_list_champions") or {}
+    for champ in champions.get("champions", []) or []:
+        if str(champ.get("status", "")).lower() == "active":
+            people.append(
+                "%s (%s, active champion)"
+                % (champ.get("name", "?"), champ.get("role", "?"))
+            )
+    return people
+
+
+def _escalation_plan_block(
+    signals: list[dict],
+    records: list,
+    account: str,
+    results: dict,
+) -> str:
+    """The harness-written escalation plan: situation with evidence,
+    people to loop in, the ask, the exec update and customer comms as
+    drafts, and the fallback. Harness-written so the plan is in the
+    draft even when the model is the stub."""
+    people = _people_to_loop_in(results)
+    champions = results.get("champify_list_champions") or {}
+    active = [
+        champ.get("name", "?")
+        for champ in champions.get("champions", []) or []
+        if str(champ.get("status", "")).lower() == "active"
+    ]
+    addressee = active[0] if active else "team"
+    owner = (results.get("salesforce_get_account") or {}).get("owner") or "the account owner"
+    kinds = ", ".join(sorted({signal["kind"] for signal in signals}))
+    lines = [
+        "Escalation plan (harness-computed):",
+        "Overall severity: high.",
+        "Escalation records: %s."
+        % (
+            ", ".join(
+                "%s (%s)" % (record.id, record.signal_key)
+                for record in records
+            )
+            if records
+            else "none recorded"
+        ),
+        "",
+        "Situation:",
+    ]
+    for signal in signals:
+        lines.append("- [%s] %s" % (signal["severity"], signal["text"]))
+    lines.append("")
+    lines.append("People to loop in:")
+    if people:
+        for person in people:
+            lines.append("- " + person)
+    else:
+        lines.append(
+            "- No active champions or account owner named in the "
+            "gathered records; find the sponsor before sending this."
+        )
+    lines.append("")
+    lines.append("The ask:")
+    for signal in signals:
+        lines.append("- %s" % _escalation_ask(signal))
+    lines.append("")
+    first = signals[0]
+    lines.append("Exec update (draft):")
+    lines.append(
+        "Escalation for %s: %d high-severity signal(s) (%s). %s The "
+        "ask is: %s. If it does not land: %s."
+        % (
+            account,
+            len(signals),
+            kinds,
+            first["text"],
+            _escalation_ask(first).rstrip("."),
+            _escalation_fallback(first).rstrip("."),
+        )
+    )
+    lines.append("")
+    lines.append("Customer comms (draft):")
+    if first["kind"] == "champion-departure":
+        dep = first.get("record") or {}
+        lines.append(
+            "Hi %s, we heard %s moved on to %s as %s — "
+            "congratulations to them. We want to make sure the work we "
+            "do together keeps its footing: can we find 20 minutes to "
+            "confirm what matters most to you now, and who owns it on "
+            "your side?"
+            % (
+                addressee,
+                dep.get("name", "your champion"),
+                dep.get("new_company", "?"),
+                dep.get("new_role", "?"),
+            )
+        )
+    else:
+        lines.append(
+            "Hi %s, flagging that we are escalating this on our side: "
+            "%s %s is driving it from our side, and we will update "
+            "you as soon as we have a named owner and a fix date. If "
+            "you have anything to add — impact, timing, who else "
+            "feels it — send it over."
+            % (addressee, first["text"], owner)
+        )
+    lines.append("")
+    lines.append("If this does not land:")
+    for signal in signals:
+        lines.append("- %s" % _escalation_fallback(signal))
+    return "\n".join(lines)
+
+
+def _escalation_status_block(account: str, records: list) -> str:
+    """The status note a run drafts when nothing new needs
+    escalating but the account has escalation records. Names each
+    record and its state; it is a report, not a plan."""
+    lines = [
+        "Escalation status for %s:" % account,
+        "Overall severity: high.",
+    ]
+    for record in records:
+        line = "- %s: %s is %s" % (
+            record.id,
+            record.signal_key,
+            record.status,
+        )
+        if record.status == "open" and record.draft_id:
+            line += ", awaiting a decision on draft %s" % record.draft_id
+        if record.status == "escalated":
+            line += " (plan approved, in flight)"
+        if record.status == "resolved":
+            line += " (resolved; a resolved escalation stays resolved)"
+        lines.append(line)
+    lines.append(
+        "No new escalation is drafted: every high-severity signal for "
+        "this account already has a record."
+    )
+    return "\n".join(lines)
+
+
+def _escalation_closure_block(records: list, account: str) -> str:
+    """The closure confirmation for escalated records whose signal is
+    no longer detected. Approving this draft marks the records
+    resolved: resolving is a human decision recorded through the
+    queue outcome, never the agent's own call."""
+    lines = [
+        "Escalation closure: the signal behind these escalations was "
+        "not detected in this run's fresh gather for %s:" % account,
+        "Overall severity: high.",
+    ]
+    for record in records:
+        lines.append(
+            "- %s: %s (escalated since %s)"
+            % (record.id, record.signal_key, record.created_at)
+        )
+    lines.append(
+        "Approve this draft to mark them resolved. Reject it to keep "
+        "them escalated."
+    )
+    return "\n".join(lines)
+
+
+class EscalationManagerAgent(Agent):
+    """Owns escalations end to end.
+
+    Gathers: account summary, open opportunities, open support cases,
+    champion job changes and the champion list, recent email threads,
+    Gong and Zoom transcripts, Zendesk tickets, Linear issues, and
+    recent Slack signals — the same escalation-relevant signals
+    risk-watcher watches. Drafts: an escalation plan with the
+    situation and evidence, the people to loop in, the ask, the exec
+    update and the customer comms as drafts, and the fallback if it
+    does not land.
+
+    Composition (v1.1.0): when prior drafts from risk-watcher,
+    renewal-desk, and voice-of-customer exist for the account, the
+    plan is built from those drafts instead of re-gathering the same
+    context; only the fresh escalation signals are gathered directly.
+    When no prior drafts exist, the agent gathers directly, its
+    previous behavior.
+
+    State (v1.7.0): one record per signal per account in the
+    escalation store (open, escalated, resolved). A second run for
+    the same signal drafts a status note, not a second plan;
+    approving a plan moves its record to escalated; a resolved
+    record stays resolved even if the signal fires again. Severity,
+    the ask, and the fallback are harness-computed, never model
+    prose. With no high-severity signals the draft says no escalation
+    is needed, stated as such.
+    """
+
+    name = "escalation-manager"
+    display_name = "Escalation Manager"
+    description = (
+        "Owns escalations: drafts the escalation plan (situation, "
+        "people, ask, exec update, customer comms, fallback) and "
+        "tracks each escalation open, escalated, resolved."
+    )
+    keywords = [
+        "escalation",
+        "escalation-manager",
+        "escalate",
+        "escalation plan",
+        "exec update",
+        "customer comms",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "States the overall severity",
+            keywords=["overall severity"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        store = _escalation_store(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _ESCALATION_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the fresh
+            # escalation signals are gathered directly; the source
+            # drafts carry the opportunities, Slack, transcripts,
+            # Gmail, and Linear context, and their deep links carry
+            # through to the composed draft.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("champify_list_job_changes", {"account": account, "days": 90}),
+                ("champify_list_champions", {"account": account}),
+                ("zendesk_list_tickets", {"organization": account}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            # Fallback: no prior drafts for this account, gather directly.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("champify_list_job_changes", {"account": account, "days": 90}),
+                ("champify_list_champions", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_search_transcripts", {"query": account, "limit": 5}),
+                ("zoom_search_transcripts", {"query": account, "limit": 5}),
+                ("zendesk_list_tickets", {"organization": account}),
+                ("linear_list_issues", {}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        signals = _risk_signals(results, account)
+        high = [s for s in signals if s["severity"] == "high"]
+        current_keys = {s.get("key") for s in signals if s.get("key")}
+        pending = _pending_escalation_record_ids(job, account)
+
+        # Classify each high signal against the store: new (draft a
+        # plan), or already tracked (report its state, draft nothing
+        # new for it). A resolved record stays resolved even when the
+        # signal fires again. An open record with a plan still pending
+        # in the queue is a duplicate in waiting. An open record with
+        # no pending draft means a previous plan was decided against,
+        # so the risk is still open and a fresh plan may be drafted;
+        # the rejection is in memory, so the next draft knows.
+        new_signals: list[dict] = []
+        new_records: list = []
+        existing_lines: list[str] = []
+        for signal in high:
+            key = signal.get("key") or ""
+            record = store.record_for(account, key) if key else None
+            if record is not None and record.status == "resolved":
+                existing_lines.append(
+                    "- %s (%s) is resolved; a resolved escalation "
+                    "stays resolved, so no new plan is drafted."
+                    % (record.id, record.signal_key)
+                )
+            elif record is not None and record.status == "escalated":
+                existing_lines.append(
+                    "- %s (%s) is already escalated (plan approved, "
+                    "in flight); no new plan is drafted."
+                    % (record.id, record.signal_key)
+                )
+            elif record is not None and record.id in pending:
+                existing_lines.append(
+                    "- %s (%s) already has a plan awaiting a decision "
+                    "in the queue; no duplicate is drafted."
+                    % (record.id, record.signal_key)
+                )
+            else:
+                if record is None and key:
+                    record = store.create(
+                        account,
+                        key,
+                        signal["kind"],
+                        signal["severity"],
+                        signal["text"],
+                    )
+                new_signals.append(signal)
+                if record is not None:
+                    new_records.append(record)
+
+        # Closures: escalated records whose signal is gone. Only on a
+        # direct gather: in the composed path some tools are not
+        # re-gathered, so a missing signal there proves nothing about
+        # the risk. The agent drafts the closure; the human approves
+        # it, and the approval resolves the record.
+        closure_records: list = []
+        if not composed:
+            for record in store.for_account(account):
+                if (
+                    record.status == "escalated"
+                    and record.signal_key not in current_keys
+                ):
+                    closure_records.append(record)
+
+        # `prompt` is defined by the plan and clean branches; the
+        # status branch drafts without a model call, so it starts
+        # empty and the token estimate at the end stays valid.
+        prompt = ""
+        if new_signals or closure_records:
+            if new_records:
+                job["escalation_records"] = [r.id for r in new_records]
+            if closure_records:
+                job["escalation_resolve"] = [r.id for r in closure_records]
+            if new_signals:
+                task = (
+                    "Draft an escalation plan for account %r. Cover: "
+                    "the situation and the evidence for each "
+                    "high-severity signal, who to loop in and why, the "
+                    "ask, an exec update and customer comms as drafts, "
+                    "and what happens if it does not land. Do not "
+                    "invent a signal that is not in the context."
+                    % account
+                )
+            else:
+                task = (
+                    "Account %r has escalated records whose signals "
+                    "were not detected in this run's fresh gather. "
+                    "Draft a short closure confirmation naming them "
+                    "and asking the human to approve it to mark them "
+                    "resolved. Do not invent a signal that is not in "
+                    "the context." % account
+                )
+            prompt = _build_prompt(self.name, context, task)
+            system = (
+                "You are the escalation manager for a customer success "
+                "team. You own escalations end to end: the plan, the "
+                "people, the ask, and the fallback. Cite the evidence "
+                "and do not invent facts that are not in the context."
+            )
+            text = llm.complete(prompt, system=system)
+            if new_signals:
+                text = text + "\n\n" + _escalation_plan_block(
+                    new_signals, new_records, account, results
+                )
+            if closure_records:
+                text = text + "\n\n" + _escalation_closure_block(
+                    closure_records, account
+                )
+            if existing_lines:
+                text = text + "\n\nAlready tracked for this account:\n" + "\n".join(
+                    existing_lines
+                )
+            checklist = list(self.proof_checklist)
+            if new_signals:
+                checklist += [
+                    ProofItem(
+                        "Gives the escalation plan",
+                        keywords=["escalation plan"],
+                    ),
+                    ProofItem(
+                        "Names who to loop in",
+                        keywords=["people to loop in"],
+                    ),
+                    ProofItem(
+                        "States the ask",
+                        keywords=["the ask"],
+                    ),
+                    ProofItem(
+                        "Drafts the exec update",
+                        keywords=["exec update"],
+                    ),
+                    ProofItem(
+                        "Drafts the customer comms",
+                        keywords=["customer comms"],
+                    ),
+                    ProofItem(
+                        "States the fallback",
+                        keywords=["if this does not land"],
+                    ),
+                ]
+            if closure_records:
+                checklist += [
+                    ProofItem(
+                        "Names the escalations to close",
+                        keywords=["escalation closure"],
+                    ),
+                    ProofItem(
+                        "Says approval resolves them",
+                        keywords=["mark them resolved"],
+                    ),
+                ]
+        elif store.for_account(account):
+            # Nothing new to draft, but the account has escalations:
+            # report their state instead of drafting a second plan.
+            text = _escalation_status_block(
+                account, store.for_account(account)
+            )
+            checklist = list(self.proof_checklist)
+            checklist += [
+                ProofItem(
+                    "Reports the escalation status",
+                    keywords=["escalation status"],
+                ),
+                ProofItem(
+                    "Says no new escalation is drafted",
+                    keywords=["no new escalation is drafted"],
+                ),
+            ]
+        else:
+            # No high-severity signals and no escalations on file.
+            prompt = _build_prompt(
+                self.name,
+                context,
+                "Account %r has no high-severity signals in the "
+                "gathered context. Draft a short note saying no "
+                "escalation is needed and why. Do not invent a signal "
+                "that is not in the context." % account,
+            )
+            system = (
+                "You are the escalation manager for a customer success "
+                "team. You escalate only on evidence: no high-severity "
+                "signal means no escalation."
+            )
+            text = llm.complete(prompt, system=system)
+            overall = signals[0]["severity"] if signals else "none"
+            text = text + (
+                "\n\nNo escalation needed for %s: no high-severity "
+                "signals in the gathered records. Overall severity: %s."
+                % (account, overall)
+            )
+            checklist = list(self.proof_checklist)
+            checklist += [
+                ProofItem(
+                    "Says no escalation is needed",
+                    keywords=["no escalation needed"],
+                ),
+            ]
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 def build_agents() -> dict[str, Agent]:
-    """All eleven agents, keyed by name. All implemented."""
+    """All twelve agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -2744,6 +3346,7 @@ def build_agents() -> dict[str, Agent]:
         "value-finder": ValueFinderAgent(),
         "salesforce-updater": SalesforceUpdaterAgent(),
         "risk-watcher": RiskWatcherAgent(),
+        "escalation-manager": EscalationManagerAgent(),
     }
     return agents
 

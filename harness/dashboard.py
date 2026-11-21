@@ -31,6 +31,7 @@ from . import AGENTS, __version__
 from .agents import _extract_account
 from .approvals import ApprovalQueue
 from .config import Config
+from .escalations import EscalationStore
 from .memory import AccountMemory
 from .summarizer import estimate_tokens
 
@@ -159,7 +160,7 @@ def source_statuses(config: Config) -> list[dict]:
 
 
 def agent_states(queue: ApprovalQueue) -> list[dict]:
-    """Right rail: the 11 agents.
+    """Right rail: the 12 agents.
 
     Last-run state comes from the queue: the newest draft each agent
     produced, and when. An agent with no drafts has never run.
@@ -297,9 +298,13 @@ def create_app(
     def get_queue() -> ApprovalQueue:
         # Re-read the file on every request so drafts queued by the CLI
         # show up without restarting the server. The memory store is
-        # attached so dashboard decisions are recorded as memory too.
+        # attached so dashboard decisions are recorded as memory too,
+        # and the escalation store so approving an escalation-manager
+        # draft moves its records to escalated here as well.
         return queue or ApprovalQueue(
-            cfg.approvals_file, memory=AccountMemory(cfg.memory_file)
+            cfg.approvals_file,
+            memory=AccountMemory(cfg.memory_file),
+            escalations=EscalationStore(cfg.escalations_file),
         )
 
     @app.get("/", response_class=HTMLResponse)

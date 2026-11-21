@@ -25,6 +25,9 @@ Usage:
     python -m harness.run mcp-servers add --name gmail --stdio "python -m connectors.gmail.server"
     python -m harness.run mcp-servers add --name docs --sse https://example.com/mcp
     python -m harness.run mcp-servers remove gmail
+    python -m harness.run escalations list
+    python -m harness.run escalations show <id>
+    python -m harness.run escalations resolve <id> [--note "..."]
     python -m harness.run dashboard [--port 8000]
 
 The `run` command routes the job, runs the agent, and submits the draft to
@@ -73,6 +76,7 @@ from harness import (
     AccountMemory,
     ApprovalQueue,
     Config,
+    EscalationStore,
     Router,
     TokenBudget,
     ToolRegistry,
@@ -194,13 +198,20 @@ def execute_job(config: Config, job: dict):
         "qbr-builder",
         "salesforce-updater",
         "risk-watcher",
+        "escalation-manager",
     ):
         # Value-finder and qbr-builder read prior drafts from the
         # approval queue (value-finder synthesizes them, qbr-builder
         # composes from them); salesforce-updater reads them for
-        # context on what needs updating; risk-watcher composes from
-        # them. The queue path travels with the job.
+        # context on what needs updating; risk-watcher and
+        # escalation-manager compose from them. The queue path travels
+        # with the job.
         job.setdefault("approvals_file", config.approvals_file)
+    if route.agent == "escalation-manager":
+        # The escalation store travels with the job too: the agent
+        # reads and writes it, and the draft ids are linked to its
+        # records after the draft is queued below.
+        job.setdefault("escalations_file", config.escalations_file)
     if route.agent == "value-finder":
         # Value-finder quantifies time saved from explicit inputs only:
         # the loaded hourly rate comes from the job, or from
@@ -220,6 +231,18 @@ def execute_job(config: Config, job: dict):
         proof=draft.proof,
         writes=draft.writes,
     )
+    if route.agent == "escalation-manager" and job.get("escalation_records"):
+        # Link the new escalation records to this draft, so approving
+        # it moves them to escalated. State tracking never breaks the
+        # queue path: a failed link is swallowed here.
+        try:
+            store = EscalationStore(
+                job.get("escalations_file") or config.escalations_file
+            )
+            for record_id in job["escalation_records"]:
+                store.set_draft(str(record_id), item.id)
+        except Exception:
+            pass
     return item, draft, agent, route
 
 
@@ -284,7 +307,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_agents(_args: argparse.Namespace) -> int:
-    """List the eleven agents and whether each is implemented in v1."""
+    """List the twelve agents and whether each is implemented in v1."""
     for name in sorted(AGENTS):
         agent = AGENTS[name]
         status = "implemented" if agent.implemented else "planned"
@@ -308,10 +331,14 @@ def cmd_approvals(args: argparse.Namespace) -> int:
 
     The queue is built with the memory store attached, so every
     decision here (approve, reject, edit) is recorded as memory for
-    the draft's account."""
+    the draft's account. The escalation store is attached too, so
+    approving an escalation-manager draft moves its records to
+    escalated and resolves the ones its closure section names."""
     config = Config.from_env()
     queue = ApprovalQueue(
-        config.approvals_file, memory=AccountMemory(config.memory_file)
+        config.approvals_file,
+        memory=AccountMemory(config.memory_file),
+        escalations=EscalationStore(config.escalations_file),
     )
     if args.action == "list":
         items = queue.list_pending()
@@ -675,6 +702,63 @@ def cmd_mcp_servers(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_escalations(args: argparse.Namespace) -> int:
+    """List, show, or resolve escalation records (v1.7.0).
+
+    list shows every record, or one account's with --account. show
+    prints one record in full. resolve is the human decision that
+    closes an escalation: it marks the record resolved, and the next
+    run for the account will not re-escalate that signal."""
+    config = Config.from_env()
+    store = EscalationStore(config.escalations_file)
+    if args.action == "list":
+        if args.account:
+            records = store.for_account(args.account)
+        else:
+            records = store.list_all()
+        if not records:
+            print("No escalations on file.")
+            return 0
+        for record in records:
+            print(record.describe())
+        return 0
+    if args.action == "show":
+        record = store.get(args.record_id)
+        if record is None:
+            print("Unknown escalation: %s" % args.record_id, file=sys.stderr)
+            return 1
+        print("ID: %s" % record.id)
+        print("Account: %s" % record.account)
+        print("Signal: %s (%s, %s)" % (record.signal_key, record.signal_kind, record.severity))
+        print("Status: %s" % record.status)
+        print("Created: %s" % record.created_at)
+        print("Updated: %s" % record.updated_at)
+        if record.draft_id:
+            print("Draft: %s" % record.draft_id)
+        if record.resolved_at:
+            print("Resolved: %s" % record.resolved_at)
+        if record.note:
+            print("Note: %s" % record.note)
+        print("Summary: %s" % record.summary)
+        return 0
+    if args.action == "resolve":
+        if store.resolve(args.record_id, note=args.note):
+            print("Resolved escalation %s." % args.record_id)
+            return 0
+        record = store.get(args.record_id)
+        if record is None:
+            print("Unknown escalation: %s" % args.record_id, file=sys.stderr)
+        else:
+            print(
+                "Escalation %s is already %s."
+                % (args.record_id, record.status),
+                file=sys.stderr,
+            )
+        return 1
+    print("Unknown escalations action: %s" % args.action, file=sys.stderr)
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cs-harness",
@@ -697,7 +781,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--no-memory", action="store_true", help="Run cold: do not load the account's memory as context.")
     run_p.set_defaults(func=cmd_run)
 
-    agents_p = sub.add_parser("agents", help="List the eleven agents.")
+    agents_p = sub.add_parser("agents", help="List the twelve agents.")
     agents_p.set_defaults(func=cmd_agents)
 
     tools_p = sub.add_parser("tools", help="List registered connector tools.")
@@ -754,6 +838,13 @@ def build_parser() -> argparse.ArgumentParser:
     mcp_p.add_argument("--read-only", action="store_true", help="Assert every tool on this server only reads. Only set for servers known to be read-only: it lets their tools run during gathering.")
     mcp_p.add_argument("--cwd", help="Working directory for a stdio server.")
     mcp_p.set_defaults(func=cmd_mcp_servers)
+
+    esc_p = sub.add_parser("escalations", help="List, show, or resolve escalation records.")
+    esc_p.add_argument("action", choices=["list", "show", "resolve"])
+    esc_p.add_argument("record_id", nargs="?", help="Escalation id, for show and resolve.")
+    esc_p.add_argument("--account", help="Account name, for list.")
+    esc_p.add_argument("--note", help="Note to attach when resolving.")
+    esc_p.set_defaults(func=cmd_escalations)
     return parser
 
 
@@ -776,6 +867,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("mcp-servers add needs --name and exactly one of --stdio or --sse.")
     if args.command == "mcp-servers" and args.action == "remove" and not args.server_name:
         parser.error("mcp-servers remove needs a server name.")
+    if args.command == "escalations" and args.action in ("show", "resolve") and not args.record_id:
+        parser.error("escalations %s needs an escalation id." % args.action)
     return args.func(args)
 
 
