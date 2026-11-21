@@ -166,6 +166,7 @@ agent candidates below.
 | HubSpot | v0.8.3 | `hubspot_get_company`, `hubspot_list_deals`, `hubspot_list_tickets` |
 | Gmail | v0.8.4 | `gmail_search_messages`, `gmail_get_thread` |
 | Zoom | v0.8.5 | `zoom_list_recordings`, `zoom_get_recording_summary`, `zoom_search_transcripts` |
+| Zendesk | v0.8.6 | `zendesk_list_tickets`, `zendesk_search_tickets`, `zendesk_get_ticket` |
 
 Each connector exposes its tools two ways, from one implementation
 (`tools.py`): in-process, through the harness tool registry (the v0.2 path),
@@ -179,6 +180,7 @@ python -m connectors.gong.server
 python -m connectors.hubspot.server
 python -m connectors.gmail.server
 python -m connectors.zoom.server
+python -m connectors.zendesk.server
 ```
 
 Calling the MCP servers from the harness via an MCP client (instead of
@@ -187,7 +189,7 @@ and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v0.8 honesty)
 
-**Real, tested (172 unit tests, all passing):**
+**Real, tested (193 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).

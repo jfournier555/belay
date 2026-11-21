@@ -295,7 +295,7 @@ class TestVoiceOfCustomerGathersZoom(unittest.TestCase):
             if p["label"] == "Cites Zoom recording transcripts"
         ][0]
         self.assertTrue(zoom_item["passed"])
-        self.assertEqual(len(draft.proof), 8)
+        self.assertEqual(len(draft.proof), 9)
         zoom_links = [
             link for link in draft.links if "zoom.invalid" in link["url"]
         ]

@@ -12,6 +12,7 @@ from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.salesforce.tools import salesforce_tools
 from connectors.slack.tools import slack_tools
+from connectors.zendesk.tools import zendesk_tools
 from connectors.zoom.tools import zoom_tools
 from harness import AGENTS, TokenBudget, ToolRegistry
 from harness.agents import Draft, ProofItem, check_proof
@@ -34,6 +35,8 @@ def _stub_registry() -> ToolRegistry:
     for tool in gmail_tools(config):
         registry.register(tool)
     for tool in zoom_tools(config):
+        registry.register(tool)
+    for tool in zendesk_tools(config):
         registry.register(tool)
     return registry
 
@@ -131,6 +134,7 @@ class TestAgents(unittest.TestCase):
         )
         self.assertEqual(draft.agent, "voice-of-customer")
         self.assertIn("salesforce_list_cases", draft.sources)
+        self.assertIn("zendesk_list_tickets", draft.sources)
         self.assertIn("slack_search_messages", draft.sources)
         self.assertIn("gong_search_transcripts", draft.sources)
         self.assertIn("zoom_search_transcripts", draft.sources)
@@ -146,7 +150,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("sentiment", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 8)
+        self.assertEqual(len(draft.proof), 9)
 
     def test_voc_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)

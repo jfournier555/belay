@@ -41,6 +41,12 @@ Environment variables:
                              access token (grant_type=account_credentials).
                              The Zoom app needs the recording:read:admin
                              scope.
+    ZENDESK_SUBDOMAIN        Zendesk subdomain, e.g. acme for
+                             acme.zendesk.com.
+    ZENDESK_EMAIL            Email of the Zendesk API user.
+    ZENDESK_API_TOKEN        Zendesk API token. Auth is HTTP Basic with
+                             username "{email}/token" and password the
+                             token.
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
@@ -74,6 +80,9 @@ class Config:
     zoom_account_id: str | None = None
     zoom_client_id: str | None = None
     zoom_client_secret: str | None = None
+    zendesk_subdomain: str | None = None
+    zendesk_email: str | None = None
+    zendesk_api_token: str | None = None
     approvals_file: str = "approvals.json"
     token_budget_per_job: int = 8000
 
@@ -108,6 +117,9 @@ class Config:
             zoom_account_id=os.environ.get("ZOOM_ACCOUNT_ID") or None,
             zoom_client_id=os.environ.get("ZOOM_CLIENT_ID") or None,
             zoom_client_secret=os.environ.get("ZOOM_CLIENT_SECRET") or None,
+            zendesk_subdomain=os.environ.get("ZENDESK_SUBDOMAIN") or None,
+            zendesk_email=os.environ.get("ZENDESK_EMAIL") or None,
+            zendesk_api_token=os.environ.get("ZENDESK_API_TOKEN") or None,
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
@@ -161,5 +173,15 @@ class Config:
             self.zoom_account_id
             and self.zoom_client_id
             and self.zoom_client_secret
+            and not self.stub_mode
+        )
+
+    def zendesk_configured(self) -> bool:
+        """True when the Zendesk token triple is present and stub mode
+        is off."""
+        return bool(
+            self.zendesk_subdomain
+            and self.zendesk_email
+            and self.zendesk_api_token
             and not self.stub_mode
         )

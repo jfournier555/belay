@@ -23,8 +23,9 @@ V1 implements eight end to end:
 - advocate-finder: finds champions and advocates: who uses the product
   most, who praises it in Slack, who would make a good reference.
 - voice-of-customer: collects and synthesizes customer feedback: feature
-  requests, pain points, sentiment from cases, Slack, and Gong call
-  transcripts, and the top themes to take back to the product team.
+  requests, pain points, sentiment from cases, Slack, Zendesk tickets,
+  and Gong call transcripts, and the top themes to take back to the
+  product team.
 
 All eight are implemented. Every job in the harness has a working agent.
 
@@ -226,6 +227,13 @@ STUB_GMAIL_HOST = "https://mail.google.invalid"
 GMAIL_APP_HOST = "https://mail.google.com"
 
 
+# Zendesk ticket links are built from the subdomain and the ticket id:
+# https://{subdomain}.zendesk.com/agent/tickets/{id}. Stub data links
+# to the same path on .invalid, so a stub link is well-formed but
+# unmistakably fake.
+STUB_ZENDESK_HOST = "https://acme-stub.zendesk.invalid"
+
+
 def _gmail_base(result: dict) -> str:
     """The base URL for Gmail deep links from a tool result."""
     if result.get("_stub"):
@@ -247,6 +255,15 @@ def _gong_base(result: dict) -> str:
     if result.get("_stub"):
         return STUB_GONG_HOST
     return GONG_APP_HOST
+
+
+def _zendesk_base(result: dict) -> str | None:
+    """The base URL for Zendesk deep links from a tool result."""
+    if result.get("_stub"):
+        return STUB_ZENDESK_HOST
+    if result.get("subdomain"):
+        return "https://%s.zendesk.com" % result["subdomain"]
+    return None
 
 
 def _salesforce_base(result: dict) -> str | None:
@@ -469,6 +486,32 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                                 match.get("timestamp", ""),
                             ),
                             "url": match["play_url"],
+                        }
+                    )
+    elif tool_name in (
+        "zendesk_list_tickets",
+        "zendesk_search_tickets",
+        "zendesk_get_ticket",
+    ):
+        base = _zendesk_base(result)
+        if base:
+            if tool_name == "zendesk_list_tickets":
+                tickets = result.get("tickets", [])
+            elif tool_name == "zendesk_search_tickets":
+                tickets = result.get("matches", [])
+            else:
+                tickets = [result] if result.get("id") else []
+            for ticket in tickets:
+                if ticket.get("id"):
+                    links.append(
+                        {
+                            "label": "Zendesk ticket %s: %s"
+                            % (
+                                ticket["id"],
+                                ticket.get("subject", ""),
+                            ),
+                            "url": "%s/agent/tickets/%s"
+                            % (base, ticket["id"]),
                         }
                     )
     return links
@@ -1147,10 +1190,10 @@ class AdvocateFinderAgent(Agent):
 class VoiceOfCustomerAgent(Agent):
     """Collects and synthesizes customer feedback for an account.
 
-    Gathers: open support cases, recent Slack signals, Gong call
-    transcripts, and Zoom recording transcripts. Drafts: feature
-    requests, pain points, sentiment from cases, Slack, and calls, and
-    the top themes to take back to the product team.
+    Gathers: open support cases, Zendesk tickets, recent Slack signals,
+    Gong call transcripts, and Zoom recording transcripts. Drafts:
+    feature requests, pain points, sentiment from cases, tickets, Slack,
+    and calls, and the top themes to take back to the product team.
     """
 
     name = "voice-of-customer"
@@ -1188,6 +1231,10 @@ class VoiceOfCustomerAgent(Agent):
             sources=["slack_search_messages"],
         ),
         ProofItem(
+            "Cites Zendesk tickets",
+            sources=["zendesk_list_tickets"],
+        ),
+        ProofItem(
             "Cites Gong call transcripts",
             sources=["gong_search_transcripts"],
         ),
@@ -1205,6 +1252,7 @@ class VoiceOfCustomerAgent(Agent):
         account = _extract_account(job)
         calls = [
             ("salesforce_list_cases", {"account": account}),
+            ("zendesk_list_tickets", {"organization": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
             ("gong_search_transcripts", {"query": account, "limit": 5}),
             ("zoom_search_transcripts", {"query": account, "limit": 5}),
@@ -1215,9 +1263,9 @@ class VoiceOfCustomerAgent(Agent):
             context,
             "Summarize the voice of the customer for account %r. Cover: "
             "feature requests, pain points, sentiment from support cases, "
-            "Slack, Gong call transcripts, and Zoom recording transcripts, "
-            "and the top themes to take back to the product team."
-            % account,
+            "Zendesk tickets, Slack, Gong call transcripts, and Zoom "
+            "recording transcripts, and the top themes to take back to "
+            "the product team." % account,
         )
         system = (
             "You are the voice of the customer for a customer success "
