@@ -1,10 +1,11 @@
-"""The specialist agents: the ten post-sales jobs the harness covers.
+"""The specialist agents: the eleven post-sales jobs the harness covers.
 
-The ten jobs are the post-sales jobs that matter: scout, briefer,
+The eleven jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
-renewal desk, voice-of-customer, value-finder, and salesforce-updater.
+renewal desk, voice-of-customer, value-finder, salesforce-updater, and
+risk-watcher.
 
-V1 implements ten end to end:
+V1 implements eleven end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -37,8 +38,17 @@ V1 implements ten end to end:
   agents gathered. The draft carries a dry-run preview (old -> new for
   every change) and the write plan; nothing executes until a human
   approves the draft in the queue.
+- risk-watcher: watches for churn signals on an account (champion
+  departure, ticket spikes, stalled renewals, sponsor disengagement)
+  and drafts a risk brief: signals ranked by severity, evidence with
+  deep links, overall severity, next step. Severity is harness-computed,
+  never model prose. When a champion departure fires, the draft asks
+  the three questions from the Champion Departure Playbook: did the
+  mandate change, who is the successor, what are the successor's
+  priorities and do they hold real influence. With no signals the draft
+  is a clean bill, stated as such.
 
-All ten are implemented. Every job in the harness has a working agent.
+All eleven are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -1740,6 +1750,12 @@ _PRIOR_DRAFT_AGENTS = ("renewal-desk", "expansion-spotter", "onboarding-guide")
 # only channel between agents.
 _QBR_SOURCE_AGENTS = ("renewal-desk", "expansion-spotter", "voice-of-customer")
 
+# The three agents whose drafts risk-watcher composes (v1.6.0):
+# renewal-desk health and risks, advocate-finder champions and
+# departures, voice-of-customer themes. Same store, same rule: the
+# queue is the only channel between agents.
+_RISK_SOURCE_AGENTS = ("renewal-desk", "advocate-finder", "voice-of-customer")
+
 
 def _load_prior_items(job: dict, account: str, agents: tuple) -> list:
     """Prior drafts from the named agents for this account, from the
@@ -2170,8 +2186,552 @@ class SalesforceUpdaterAgent(Agent):
         )
 
 
+_SEVERITY_RANK = {"high": 0, "medium": 1, "low": 2}
+
+# Escalation language in a message or transcript excerpt: the customer
+# talking about leaving, not just about a bug. A bug with a fix date is
+# a support record; "cancel" or "switching to" is a churn signal.
+_ESCALATION_WORDS = (
+    "cancel",
+    "cancelling",
+    "escalat",
+    "switching to",
+    "leaving us",
+    "churn",
+    "unacceptable",
+    "not renewing",
+)
+
+
+def _record_severity(priority, age_days) -> str:
+    """Severity of one open record from its priority and age.
+
+    High priority is high. A medium record only becomes a signal when
+    it has sat open five days or more. Zendesk calls its middle
+    priority "normal"; it counts as medium here. Low priority, and a
+    fresh medium record, are normal operations, not churn signals, so
+    they return no severity at all."""
+    priority = str(priority or "").lower()
+    try:
+        age = int(age_days) if age_days is not None else 0
+    except (TypeError, ValueError):
+        age = 0
+    if priority == "high":
+        return "high"
+    if priority in ("medium", "normal") and age >= 5:
+        return "medium"
+    return ""
+
+
+def _norm_subject(subject) -> str:
+    """Group key for one issue across systems: lowercased, punctuation
+    collapsed. The same SSO failure in Salesforce, Zendesk, and Linear
+    is one signal, not three."""
+    return re.sub(r"\W+", " ", str(subject or "").lower()).strip()
+
+
+def _risk_signals(results: dict, account: str, today=None) -> list[dict]:
+    """Detect churn signals from the gathered tool results, severity-ranked.
+
+    Deterministic, harness-computed: the model never decides what counts
+    as a signal. Champion departures are high. Open support and delivery
+    records group by subject at the worst severity in the group. A renewal
+    opportunity past its close date is high; one closing within 30 days
+    is medium. Escalation language in messages or transcripts is medium.
+    Returns a list of {"severity", "kind", "text"} dicts, high first; a
+    champion-departure signal also carries its "record" for the departure
+    block. `today` is injectable so tests can pin the date.
+    """
+    if today is None:
+        from datetime import date as _date
+
+        today = _date.today()
+    signals: list[dict] = []
+
+    # Champion departures: a job change out of this account to another
+    # company. An internal move (same company, new role) is a promotion,
+    # not a departure, and produces no signal.
+    changes = results.get("champify_list_job_changes") or {}
+    departures = []
+    for change in changes.get("job_changes", []) or []:
+        previous = change.get("previous_company")
+        new = change.get("new_company")
+        if not previous or not new:
+            continue
+        if str(previous) != str(account):
+            continue
+        if str(new) == str(previous):
+            continue
+        departures.append(change)
+        signals.append(
+            {
+                "severity": "high",
+                "kind": "champion-departure",
+                "text": (
+                    "Champion departure: %s left %s (%s) for %s (%s) "
+                    "on %s."
+                    % (
+                        change.get("name", "a champion"),
+                        previous,
+                        change.get("previous_role", "unknown role"),
+                        new,
+                        change.get("new_role", "unknown role"),
+                        change.get("changed_at", "unknown date"),
+                    )
+                ),
+                "record": change,
+            }
+        )
+
+    # Open support and delivery records, grouped by subject. One record
+    # per system at most: the group text names every system it appears
+    # in, so the reviewer sees the spread without three copies of the
+    # same failure.
+    groups: dict[str, dict] = {}
+    grouped: list[tuple[dict, str, str, str]] = []
+    cases = results.get("salesforce_list_cases") or {}
+    for case in cases.get("cases", []) or []:
+        if str(case.get("status", "")).lower() in ("closed", "solved"):
+            continue
+        grouped.append(
+            (
+                case,
+                "Salesforce case %s"
+                % case.get("number", case.get("id", "?")),
+                str(case.get("subject", "")),
+                "Salesforce",
+            )
+        )
+    tickets = results.get("zendesk_list_tickets") or {}
+    for ticket in tickets.get("tickets", []) or []:
+        if str(ticket.get("status", "")).lower() not in ("open", "pending"):
+            continue
+        grouped.append(
+            (
+                ticket,
+                "Zendesk ticket %s" % ticket.get("id", "?"),
+                str(ticket.get("subject", "")),
+                "Zendesk",
+            )
+        )
+    issues = results.get("linear_list_issues") or {}
+    for issue in issues.get("issues", []) or []:
+        if str(issue.get("status", "")).lower() in (
+            "done",
+            "canceled",
+            "cancelled",
+        ):
+            continue
+        grouped.append(
+            (
+                issue,
+                "Linear issue %s" % issue.get("identifier", issue.get("id", "?")),
+                str(issue.get("title", "")),
+                "Linear",
+            )
+        )
+    for record, label, subject, system in grouped:
+        severity = _record_severity(
+            record.get("priority"), record.get("age_days")
+        )
+        if not severity:
+            continue
+        key = _norm_subject(subject)
+        if not key:
+            continue
+        group = groups.setdefault(
+            key, {"subject": subject, "severity": "low", "parts": []}
+        )
+        if _SEVERITY_RANK[severity] < _SEVERITY_RANK[group["severity"]]:
+            group["severity"] = severity
+        group["parts"].append(
+            "%s (%s, %s days open)"
+            % (
+                label,
+                str(record.get("priority", "?")).lower(),
+                record.get("age_days", "?"),
+            )
+        )
+    for group in groups.values():
+        signals.append(
+            {
+                "severity": group["severity"],
+                "kind": "support-delivery",
+                "text": (
+                    "Support/delivery risk: %r is open in %d place(s): "
+                    "%s."
+                    % (
+                        group["subject"],
+                        len(group["parts"]),
+                        "; ".join(group["parts"]),
+                    )
+                ),
+            }
+        )
+
+    # Renewal opportunities: past close date is high, closing within 30
+    # days is medium. A single snapshot cannot show a stage regression,
+    # so none is claimed.
+    opps = results.get("salesforce_list_opportunities") or {}
+    for opp in opps.get("opportunities", []) or []:
+        if str(opp.get("type", "")).lower() != "renewal":
+            continue
+        if str(opp.get("stage", "")).lower() in ("closed won", "closed lost"):
+            continue
+        close = str(opp.get("close_date", "") or "")
+        try:
+            from datetime import date as _date
+
+            year, month, day = (int(part) for part in close.split("-"))
+            close_date = _date(year, month, day)
+        except (ValueError, TypeError):
+            continue
+        delta = (close_date - today).days
+        if delta < 0:
+            signals.append(
+                {
+                    "severity": "high",
+                    "kind": "renewal-stalled",
+                    "text": (
+                        "Renewal stalled: %s (%s) passed its close date "
+                        "%s and is still open."
+                        % (
+                            opp.get("name", "renewal opportunity"),
+                            format_money(opp["amount"])
+                            if isinstance(opp.get("amount"), (int, float))
+                            else "amount unknown",
+                            close,
+                        )
+                    ),
+                }
+            )
+        elif delta <= 30:
+            signals.append(
+                {
+                    "severity": "medium",
+                    "kind": "renewal-closing",
+                    "text": (
+                        "Renewal closing soon: %s (%s) closes %s, %d "
+                        "day(s) out, still open."
+                        % (
+                            opp.get("name", "renewal opportunity"),
+                            format_money(opp["amount"])
+                            if isinstance(opp.get("amount"), (int, float))
+                            else "amount unknown",
+                            close,
+                            delta,
+                        )
+                    ),
+                }
+            )
+
+    # Escalation language in messages or transcripts: one signal naming
+    # the sources that used it, with the first matched excerpt quoted.
+    for tool_name, label in (
+        ("gmail_search_messages", "Gmail"),
+        ("gong_search_transcripts", "Gong transcripts"),
+        ("zoom_search_transcripts", "Zoom transcripts"),
+        ("slack_search_messages", "Slack"),
+    ):
+        result = results.get(tool_name) or {}
+        matches = result.get("matches", []) or []
+        for match in matches:
+            excerpt = str(match.get("excerpt", "") or "")
+            lowered = excerpt.lower()
+            hit = next(
+                (word for word in _ESCALATION_WORDS if word in lowered),
+                None,
+            )
+            if hit:
+                signals.append(
+                    {
+                        "severity": "medium",
+                        "kind": "escalation-language",
+                        "text": (
+                            "Escalation language in %s (%r): %r"
+                            % (label, hit, excerpt[:120])
+                        ),
+                    }
+                )
+                break
+
+    signals.sort(key=lambda s: _SEVERITY_RANK[s["severity"]])
+    return signals
+
+
+def _departure_block(departures: list[dict], champions: dict | None) -> str:
+    """The three champion-departure questions, harness-written so they
+    are in the draft even when the model is the stub. One block per
+    departed champion. The successor is named only when the gathered
+    records name one; otherwise the block names the remaining active
+    champions as candidates to confirm, or says none are named."""
+    lines = [
+        "Champion departure: answer these three before drafting the "
+        "save plan."
+    ]
+    active: list[str] = []
+    if isinstance(champions, dict):
+        for champ in champions.get("champions", []) or []:
+            if str(champ.get("status", "")).lower() == "active":
+                active.append(
+                    "%s (%s)"
+                    % (champ.get("name", "?"), champ.get("role", "?"))
+                )
+    for dep in departures:
+        name = dep.get("name", "the champion")
+        lines.append(
+            "- Did the mandate change? %s left %s (%s) for %s (%s) on "
+            "%s. Find out whether they left or were pushed out because "
+            "the mandate that bought the product changed. If the mandate "
+            "is gone, the save plan becomes an exit plan."
+            % (
+                name,
+                dep.get("previous_company", "?"),
+                dep.get("previous_role", "unknown role"),
+                dep.get("new_company", "?"),
+                dep.get("new_role", "unknown role"),
+                dep.get("changed_at", "unknown date"),
+            )
+        )
+        if active:
+            lines.append(
+                "- Who is the successor? The gathered records name no "
+                "successor for %s. The remaining active champions are "
+                "%s; confirm with the account whether one of them picks "
+                "up the mandate." % (name, "; ".join(active))
+            )
+        else:
+            lines.append(
+                "- Who is the successor? The gathered records name no "
+                "successor for %s; find the successor before drafting "
+                "the save plan." % name
+            )
+        lines.append(
+            "- What are the successor's priorities, and do they hold "
+            "real influence? Validate the successor's priorities and "
+            "influence from observable signals (who listens to them, "
+            "have they defended spend, do they control budget) before "
+            "drafting the save plan."
+        )
+    return "\n".join(lines)
+
+
+def _risk_signals_block(
+    signals: list[dict], departures: list[dict], champions: dict | None
+) -> str:
+    """The harness-computed risk block appended to the draft: overall
+    severity, the severity-ranked signals, and the departure questions
+    when a champion left. No signals means a clean bill, stated as
+    such, never an invented risk."""
+    if not signals:
+        return (
+            "Risk signals (harness-computed): No churn signals found "
+            "in the gathered records. Overall severity: none. No churn "
+            "signal in the account record, opportunities, cases, "
+            "tickets, issues, messages, transcripts, or champion job "
+            "changes."
+        )
+    lines = [
+        "Risk signals (harness-computed, severity-ranked):",
+        "Overall severity: %s." % signals[0]["severity"],
+    ]
+    for signal in signals:
+        lines.append("- [%s] %s" % (signal["severity"], signal["text"]))
+    if departures:
+        lines.append("")
+        lines.append(_departure_block(departures, champions))
+    return "\n".join(lines)
+
+
+class RiskWatcherAgent(Agent):
+    """Watches for churn signals on an account and drafts a risk brief.
+
+    Gathers: account summary, open opportunities, open support cases,
+    champion job changes and the champion list, recent email threads,
+    Gong and Zoom transcripts, Zendesk tickets, Linear issues, and
+    recent Slack signals. Drafts: a risk brief with the signals ranked
+    by severity, the evidence for each with deep links, an overall
+    severity, and a recommended next step.
+
+    Composition (v1.1.0): when prior drafts from renewal-desk,
+    advocate-finder, and voice-of-customer exist for the account, the
+    brief is built from those drafts instead of re-gathering the same
+    context; only the fresh risk signals (account record, champion job
+    changes, champion list, Zendesk tickets, Salesforce cases) are
+    gathered directly. When no prior drafts exist, the agent gathers
+    directly, its previous behavior.
+
+    Severity is harness-computed, never model prose: champion departure
+    is high, an open high-priority record is high, a renewal past its
+    close date is high. When a champion departure fires, the draft
+    carries the three questions from the Champion Departure Playbook:
+    did the mandate change, who is the successor, what are the
+    successor's priorities and do they hold real influence. With no
+    signals at all the draft is a clean bill, stated as such.
+    """
+
+    name = "risk-watcher"
+    display_name = "Risk Watcher"
+    description = (
+        "Watches for churn signals: champion departure, ticket spikes, "
+        "stalled renewals, sponsor disengagement. Drafts a risk brief."
+    )
+    keywords = [
+        "risk",
+        "risk-watcher",
+        "early warning",
+        "departure",
+        "champion departure",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Cites champion job changes",
+            sources=["champify_list_job_changes"],
+        ),
+        ProofItem(
+            "States the overall severity",
+            keywords=["overall severity"],
+        ),
+        ProofItem(
+            "Gives a recommended next step",
+            keywords=["next step"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _RISK_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the fresh risk
+            # signals are gathered directly; the source drafts carry the
+            # opportunities, Slack, transcripts, Gmail, and Linear
+            # context, and their deep links carry through to the
+            # composed draft. The draft carries a harness-written
+            # provenance line naming the agents it was composed from.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("champify_list_job_changes", {"account": account, "days": 90}),
+                ("champify_list_champions", {"account": account}),
+                ("zendesk_list_tickets", {"organization": account}),
+                ("salesforce_list_cases", {"account": account}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            # Fallback: no prior drafts for this account, gather directly.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("champify_list_job_changes", {"account": account, "days": 90}),
+                ("champify_list_champions", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_search_transcripts", {"query": account, "limit": 5}),
+                ("zoom_search_transcripts", {"query": account, "limit": 5}),
+                ("zendesk_list_tickets", {"organization": account}),
+                ("linear_list_issues", {}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        signals = _risk_signals(results, account)
+        departures = [
+            signal["record"]
+            for signal in signals
+            if signal["kind"] == "champion-departure"
+        ]
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a risk brief for account %r. Cover: the churn "
+            "signals in the context ranked by severity (champion "
+            "departures, open support and delivery records, stalled or "
+            "closing renewals, escalation language in messages or "
+            "transcripts), the evidence for each signal, the overall "
+            "severity, and a recommended next step. When a champion "
+            "departure is in the context, answer the three questions: "
+            "did the mandate change, who is the successor, what are "
+            "the successor's priorities and do they hold real "
+            "influence. Do not invent a signal that is not in the "
+            "context." % account,
+        )
+        system = (
+            "You are the risk watcher for a customer success team. "
+            "You watch for churn before it becomes a renewal problem. "
+            "Rank signals by severity, cite the evidence, and do not "
+            "invent facts that are not in the context. A champion who "
+            "changed jobs is a departure signal: name the move, when "
+            "it happened, and what it means for the account."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + _risk_signals_block(
+            signals, departures, results.get("champify_list_champions")
+        )
+        checklist = list(self.proof_checklist)
+        if departures:
+            checklist += [
+                ProofItem(
+                    "Asks whether the mandate changed",
+                    keywords=["mandate"],
+                ),
+                ProofItem(
+                    "Names the successor question",
+                    keywords=["successor"],
+                ),
+                ProofItem(
+                    "Validates the successor's priorities",
+                    keywords=["priorities"],
+                ),
+            ]
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 def build_agents() -> dict[str, Agent]:
-    """All ten agents, keyed by name. All implemented."""
+    """All eleven agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -2183,6 +2743,7 @@ def build_agents() -> dict[str, Agent]:
         "voice-of-customer": VoiceOfCustomerAgent(),
         "value-finder": ValueFinderAgent(),
         "salesforce-updater": SalesforceUpdaterAgent(),
+        "risk-watcher": RiskWatcherAgent(),
     }
     return agents
 

@@ -103,7 +103,7 @@ python -m harness.run run --text "draft a renewal plan for Acme Corp" --stub
 # HARNESS_LOADED_HOURLY_RATE in the environment.
 python -m harness.run run --agent value-finder --account "Acme Corp" --stub --hourly-rate 150 --hours-saved 10 --show
 
-# See the ten agents and the registered tools.
+# See the eleven agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
 
@@ -132,7 +132,7 @@ Then run without `--stub`:
 python -m harness.run run --agent renewal-desk --account "Acme Corp"
 ```
 
-## The ten agents
+## The eleven agents
 
 Each agent owns one job, not a schedule. Cadence is the scheduler
 (v1.4.0), a separate architecture piece.
@@ -149,6 +149,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
 | value-finder | implemented | Finds realized and unrealized outcomes in money or time: time saved, revenue protected, gaps not yet captured. Every dollar figure is labeled measured or modeled with its basis. |
 | salesforce-updater | implemented | Drafts Salesforce changes for approval: field changes, activity logs, stage moves. The draft carries a dry-run preview (old -> new) and the write plan; nothing applies until a human approves it. |
+| risk-watcher | implemented | Watches for churn signals: champion departure, ticket spikes, stalled renewals, sponsor disengagement. Drafts a risk brief with signals ranked by severity (harness-computed), evidence, and a next step. On champion departure it asks whether the mandate changed, who the successor is, and what the successor's priorities are. With no signals the draft is a clean bill. Composes from prior renewal-desk, advocate-finder, and voice-of-customer drafts when they exist; gathers directly otherwise. |
 
 ## Composition
 
@@ -164,6 +165,12 @@ harness-written line names the agents it was composed from.
 
 When no prior drafts exist, qbr-builder gathers directly, exactly as
 before. Composition is an optimization, never a hard dependency.
+
+The second use is risk-watcher. When prior drafts from renewal-desk,
+advocate-finder, and voice-of-customer exist for the account, the risk
+brief is built from those drafts; only the fresh risk signals (account
+record, champion job changes, champion list, Zendesk tickets, Salesforce
+cases) are gathered directly.
 
 ## Memory
 
@@ -347,7 +354,7 @@ agent candidates below.
 
 | Agent | Target | What it will do |
 |---|---|---|
-| risk-watcher | v1.6.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. When a champion leaves, it asks whether the org mandate changed. |
+| risk-watcher | v1.6.0 (shipped) | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. When a champion leaves, it asks whether the org mandate changed, names the successor question, and validates the successor's priorities. |
 | escalation-manager | v1.7.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
 | competitive-defense | v1.8.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
 | stakeholder-mapper | v1.9.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. Records influence, not just titles. |
@@ -391,13 +398,14 @@ in-process connector tools.
 
 ## What is real vs scaffolded (v1.0.0 honesty)
 
-**Real, tested (396 unit tests, all passing):**
+**Real, tested (414 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- All ten agents, end to end, in stub mode: renewal desk, briefer,
+- All eleven agents, end to end, in stub mode: renewal desk, briefer,
   expansion spotter, onboarding guide, scout, qbr builder, advocate
-  finder, voice of customer, value finder, and Salesforce updater.
+  finder, voice of customer, value finder, Salesforce updater, and risk
+  watcher.
 - Write-back: the updater agent drafts changes with a harness-computed
   dry-run preview; only an approved write draft executes, exactly once
   per change, and rejected drafts never execute; stub writes simulate
@@ -448,9 +456,10 @@ in-process connector tools.
 **Scaffolded / planned, not built:**
 - Architecture pieces, shipped: composition (v1.1.0), memory (v1.2.0),
   write-back (v1.3.0), scheduling (v1.4.0), MCP client (v1.5.0).
-- New agents, planned: risk-watcher, escalation-manager,
-  competitive-defense, stakeholder-mapper, case-triage. They ship as minor
-  releases in the v1 line (v1.6.0–v1.10.0).
+- New agents, shipped: risk-watcher (v1.6.0).
+- New agents, planned: escalation-manager, competitive-defense,
+  stakeholder-mapper, case-triage. They ship as minor releases in the
+  v1 line (v1.7.0–v1.10.0).
 
 ## Adding a connector
 

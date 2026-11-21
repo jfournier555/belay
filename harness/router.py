@@ -1,6 +1,6 @@
 """Router: pick the right specialist agent for a job, cheaply.
 
-The router is the single entry point for the harness: one router, ten
+The router is the single entry point for the harness: one router, eleven
 specialist agents. Its job is to be cheap: it should cost almost nothing
 to decide who does the work, so the tokens go to the work itself.
 

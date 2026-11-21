@@ -159,7 +159,7 @@ def source_statuses(config: Config) -> list[dict]:
 
 
 def agent_states(queue: ApprovalQueue) -> list[dict]:
-    """Right rail: the 10 agents.
+    """Right rail: the 11 agents.
 
     Last-run state comes from the queue: the newest draft each agent
     produced, and when. An agent with no drafts has never run.

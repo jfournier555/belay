@@ -1,4 +1,4 @@
-"""Tests for the agents: all ten end to end, plus the proof checklist.
+"""Tests for the agents: all eleven end to end, plus the proof checklist.
 
 These run the full loop with stub tools and the stub LLM, so no network
 and no credentials are needed. They prove the agent gathers context from
@@ -53,8 +53,8 @@ class TestAgents(unittest.TestCase):
         self.llm = StubLLM()
         self.budget = TokenBudget(8000)
 
-    def test_ten_agents_registered(self):
-        self.assertEqual(len(AGENTS), 10)
+    def test_eleven_agents_registered(self):
+        self.assertEqual(len(AGENTS), 11)
         implemented = [n for n, a in AGENTS.items() if a.implemented]
         self.assertEqual(
             sorted(implemented),
@@ -65,6 +65,7 @@ class TestAgents(unittest.TestCase):
                 "onboarding-guide",
                 "qbr-builder",
                 "renewal-desk",
+                "risk-watcher",
                 "salesforce-updater",
                 "scout",
                 "value-finder",
