@@ -123,6 +123,15 @@ def source_statuses(config: Config) -> list[dict]:
                 else "No credentials: stub data."
             ),
         },
+        {
+            "name": "Gmail",
+            "status": "live" if config.gmail_configured() else "stub",
+            "detail": (
+                "Connected."
+                if config.gmail_configured()
+                else "No credentials: stub data."
+            ),
+        },
     ]
 
 

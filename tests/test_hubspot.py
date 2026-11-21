@@ -26,6 +26,8 @@ from harness.run import build_registry
 
 from connectors.slack.tools import slack_tools
 
+from connectors.gmail.tools import gmail_tools
+
 
 def _stub_config() -> _Config:
     """A config with no credentials: stub mode for every connector."""
@@ -41,6 +43,8 @@ def _hubspot_registry() -> ToolRegistry:
     for tool in hubspot_tools(config):
         registry.register(tool)
     for tool in slack_tools(config):
+        registry.register(tool)
+    for tool in gmail_tools(config):
         registry.register(tool)
     return registry
 
@@ -233,6 +237,7 @@ class TestRenewalDeskGathersHubSpot(unittest.TestCase):
         self.assertIn("hubspot_list_deals", draft.sources)
         self.assertIn("hubspot_list_tickets", draft.sources)
         self.assertIn("slack_search_messages", draft.sources)
+        self.assertIn("gmail_search_messages", draft.sources)
         self.assertNotIn("salesforce_get_account", draft.sources)
         self.assertNotIn("salesforce_list_opportunities", draft.sources)
         self.assertNotIn("salesforce_list_cases", draft.sources)
@@ -240,7 +245,8 @@ class TestRenewalDeskGathersHubSpot(unittest.TestCase):
         labels = [p["label"] for p in draft.proof]
         self.assertIn("Names the open renewal deal", labels)
         self.assertIn("Names open support tickets", labels)
-        self.assertEqual(len(draft.proof), 5)
+        self.assertIn("Cites email threads", labels)
+        self.assertEqual(len(draft.proof), 6)
         self.assertTrue(all(p["passed"] for p in draft.proof))
         hubspot_links = [
             link for link in draft.links if "hubspot" in link["url"]

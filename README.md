@@ -164,6 +164,7 @@ agent candidates below.
 | Slack | v0.2 | `slack_search_messages`, `slack_list_channels`, `slack_get_thread` |
 | Gong | v0.8.2 | `gong_list_calls`, `gong_get_call_summary`, `gong_search_transcripts` |
 | HubSpot | v0.8.3 | `hubspot_get_company`, `hubspot_list_deals`, `hubspot_list_tickets` |
+| Gmail | v0.8.4 | `gmail_search_messages`, `gmail_get_thread` |
 
 Each connector exposes its tools two ways, from one implementation
 (`tools.py`): in-process, through the harness tool registry (the v0.2 path),
@@ -175,6 +176,7 @@ python -m connectors.salesforce.server
 python -m connectors.slack.server
 python -m connectors.gong.server
 python -m connectors.hubspot.server
+python -m connectors.gmail.server
 ```
 
 Calling the MCP servers from the harness via an MCP client (instead of
@@ -183,7 +185,7 @@ and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v0.8 honesty)
 
-**Real, tested (128 unit tests, all passing):**
+**Real, tested (149 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
@@ -195,7 +197,7 @@ and shared, so the cutover is a client, not a rewrite.
   links to the records it cites; failures are flagged in the draft
   metadata and shown in `approvals show`, never a block, and no
   aggregate score is shown anywhere.
-- Salesforce, Slack, Gong, and HubSpot MCP servers: verified over the real MCP protocol
+- Salesforce, Slack, Gong, HubSpot, and Gmail MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
 - The dashboard (v0.8.0): local FastAPI server reading the live queue
@@ -206,11 +208,12 @@ and shared, so the cutover is a client, not a rewrite.
 
 **Written, not verified against a live system:**
 - The live Salesforce REST/SOQL calls, the live Slack Web API calls,
-  the live Gong REST API calls, and the live HubSpot CRM API calls. They
-  are real code, written against the documented APIs, but no credentials
-  were available while building v0.2 (Salesforce/Slack), v0.8.2 (Gong),
-  or v0.8.3 (HubSpot), so they have not run against a real org,
-  workspace, Gong account, or HubSpot portal. Treat them as "written,
+  the live Gong REST API calls, the live HubSpot CRM API calls, and the
+  live Gmail API calls. They are real code, written against the
+  documented APIs, but no credentials were available while building
+  v0.2 (Salesforce/Slack), v0.8.2 (Gong), v0.8.3 (HubSpot), or v0.8.4
+  (Gmail), so they have not run against a real org, workspace, Gong
+  account, HubSpot portal, or mailbox. Treat them as "written,
   not verified" until someone runs them with real credentials. Stub mode
   is what runs in the demo and the tests.
 

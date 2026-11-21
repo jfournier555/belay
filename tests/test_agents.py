@@ -8,6 +8,7 @@ against its proof checklist before the draft reaches the approval queue.
 
 import unittest
 
+from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.salesforce.tools import salesforce_tools
 from connectors.slack.tools import slack_tools
@@ -28,6 +29,8 @@ def _stub_registry() -> ToolRegistry:
     for tool in slack_tools(config):
         registry.register(tool)
     for tool in gong_tools(config):
+        registry.register(tool)
+    for tool in gmail_tools(config):
         registry.register(tool)
     return registry
 
@@ -68,6 +71,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("salesforce_list_opportunities", draft.sources)
         self.assertIn("salesforce_list_cases", draft.sources)
         self.assertIn("slack_search_messages", draft.sources)
+        self.assertIn("gmail_search_messages", draft.sources)
         # The stub draft shows the gathered context, including the stub
         # account's renewal date, so the pipeline is demonstrably working.
         self.assertIn("Acme Corp", draft.text)
@@ -381,13 +385,13 @@ class TestProofChecklist(unittest.TestCase):
             self.budget,
         )
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 5)
+        self.assertEqual(len(draft.proof), 6)
         self.assertTrue(all(p["passed"] for p in draft.proof))
 
     def test_proof_flags_missing_sources_when_budget_skips_tools(self):
         # Stub tool costs: account 58, opportunities 96, cases 90,
         # slack 153. A budget of 100 lets only the account call through,
-        # so the renewal desk proof fails exactly the two source items.
+        # so the renewal desk proof fails exactly the three source items.
         agent = AGENTS["renewal-desk"]
         draft = agent.run(
             {"account": "Acme Corp"},
@@ -398,10 +402,11 @@ class TestProofChecklist(unittest.TestCase):
         self.assertEqual(draft.sources, ["salesforce_get_account"])
         self.assertFalse(draft.proof_passed)
         failed = [p for p in draft.proof if not p["passed"]]
-        self.assertEqual(len(failed), 2)
+        self.assertEqual(len(failed), 3)
         labels = [p["label"] for p in failed]
         self.assertIn("Names the open renewal opportunity", labels)
         self.assertIn("Names open support cases", labels)
+        self.assertIn("Cites email threads", labels)
 
     def test_proof_failure_does_not_block_the_draft(self):
         # A failed proof item is a flag for the human reviewer, never a
@@ -434,7 +439,7 @@ class TestProofChecklist(unittest.TestCase):
             # the reviewer sees it when they open the item.
             reloaded = ApprovalQueue(tmp.name).get(item.id)
             self.assertIsNotNone(reloaded)
-            self.assertEqual(len(reloaded.proof), 5)
+            self.assertEqual(len(reloaded.proof), 6)
             self.assertFalse(
                 all(p["passed"] for p in reloaded.proof)
             )

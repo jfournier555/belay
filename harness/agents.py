@@ -218,6 +218,21 @@ STUB_HUBSPOT_HOST = "https://app.hubspot.invalid"
 HUBSPOT_APP_HOST = "https://app.hubspot.com"
 
 
+# Gmail thread links are built from the thread id:
+# https://mail.google.com/mail/u/0/#inbox/<threadId>. Stub data links
+# to the same path on .invalid, so a stub link is well-formed but
+# unmistakably fake.
+STUB_GMAIL_HOST = "https://mail.google.invalid"
+GMAIL_APP_HOST = "https://mail.google.com"
+
+
+def _gmail_base(result: dict) -> str:
+    """The base URL for Gmail deep links from a tool result."""
+    if result.get("_stub"):
+        return STUB_GMAIL_HOST
+    return GMAIL_APP_HOST
+
+
 def _hubspot_base(result: dict) -> str | None:
     """The base URL for HubSpot deep links from a tool result."""
     if result.get("_stub"):
@@ -385,6 +400,32 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                             % (base, match["call_id"]),
                         }
                     )
+    elif tool_name == "gmail_search_messages":
+        base = _gmail_base(result)
+        for match in result.get("matches", []):
+            if match.get("thread_id"):
+                links.append(
+                    {
+                        "label": "Email: %s (%s)"
+                        % (
+                            match.get("subject", match["thread_id"]),
+                            match.get("author", "unknown"),
+                        ),
+                        "url": "%s/mail/u/0/#inbox/%s"
+                        % (base, match["thread_id"]),
+                    }
+                )
+    elif tool_name == "gmail_get_thread":
+        base = _gmail_base(result)
+        thread_id = result.get("thread_id")
+        if thread_id:
+            links.append(
+                {
+                    "label": "Email thread: %s"
+                    % result.get("subject", thread_id),
+                    "url": "%s/mail/u/0/#inbox/%s" % (base, thread_id),
+                }
+            )
     return links
 
 
@@ -459,10 +500,11 @@ class RenewalDeskAgent(Agent):
     """Drafts a renewal plan for an account.
 
     Gathers: account health, open renewal opportunity, open support cases,
-    and recent Slack signals. Drafts: account health, risks, next steps, and
-    a message to the customer. The CRM it gathers from is the registry's
-    `crm`: Salesforce by default, HubSpot when HubSpot is configured and
-    Salesforce is not. The proof checklist follows the CRM.
+    recent Slack signals, and recent email threads. Drafts: account health,
+    risks, next steps, and a message to the customer. The CRM it gathers
+    from is the registry's `crm`: Salesforce by default, HubSpot when
+    HubSpot is configured and Salesforce is not. The proof checklist
+    follows the CRM.
     """
 
     name = "renewal-desk"
@@ -489,6 +531,10 @@ class RenewalDeskAgent(Agent):
             "Names open support cases",
             sources=["salesforce_list_cases"],
         ),
+        ProofItem(
+            "Cites email threads",
+            sources=["gmail_search_messages"],
+        ),
         ProofItem("Covers account health", keywords=["health"]),
         ProofItem("Lists next steps", keywords=["step"]),
         ProofItem(
@@ -504,6 +550,10 @@ class RenewalDeskAgent(Agent):
         ProofItem(
             "Names open support tickets",
             sources=["hubspot_list_tickets"],
+        ),
+        ProofItem(
+            "Cites email threads",
+            sources=["gmail_search_messages"],
         ),
         ProofItem("Covers account health", keywords=["health"]),
         ProofItem("Lists next steps", keywords=["step"]),
@@ -530,13 +580,15 @@ class RenewalDeskAgent(Agent):
             ]
             checklist = self.proof_checklist
         calls.append(("slack_search_messages", {"query": account, "limit": 5}))
+        calls.append(("gmail_search_messages", {"query": account, "limit": 5}))
         context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
             "Draft a renewal plan for account %r. Cover: account health, "
             "the open renewal opportunity, open support cases, any risk "
-            "signals from Slack, and the next three steps with owners." % account,
+            "signals from Slack and email, and the next three steps with "
+            "owners." % account,
         )
         system = (
             "You are the renewal desk for a customer success team. "

@@ -26,6 +26,14 @@ Environment variables:
                              records. Optional: without it the harness still
                              gathers, but builds no HubSpot links. Falls
                              back to the account-info API when unset.
+    GMAIL_CLIENT_ID          Gmail OAuth client id (Desktop app type).
+    GMAIL_CLIENT_SECRET      Gmail OAuth client secret.
+    GMAIL_REFRESH_TOKEN      Gmail OAuth refresh token, minted once with
+                             the readonly scope
+                             https://www.googleapis.com/auth/gmail.readonly.
+                             The connector exchanges it for an access token
+                             on every call. Read-only by scope: it can
+                             never send or delete mail.
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
@@ -53,6 +61,9 @@ class Config:
     gong_api_base_url: str = "https://api.gong.io/v2"
     hubspot_access_token: str | None = None
     hubspot_portal_id: str | None = None
+    gmail_client_id: str | None = None
+    gmail_client_secret: str | None = None
+    gmail_refresh_token: str | None = None
     approvals_file: str = "approvals.json"
     token_budget_per_job: int = 8000
 
@@ -79,6 +90,11 @@ class Config:
             hubspot_access_token=os.environ.get("HUBSPOT_ACCESS_TOKEN")
             or None,
             hubspot_portal_id=os.environ.get("HUBSPOT_PORTAL_ID") or None,
+            gmail_client_id=os.environ.get("GMAIL_CLIENT_ID") or None,
+            gmail_client_secret=os.environ.get("GMAIL_CLIENT_SECRET")
+            or None,
+            gmail_refresh_token=os.environ.get("GMAIL_REFRESH_TOKEN")
+            or None,
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
@@ -115,3 +131,12 @@ class Config:
     def hubspot_configured(self) -> bool:
         """True when a HubSpot token is present and stub mode is off."""
         return bool(self.hubspot_access_token and not self.stub_mode)
+
+    def gmail_configured(self) -> bool:
+        """True when the Gmail OAuth triple is present and stub mode is off."""
+        return bool(
+            self.gmail_client_id
+            and self.gmail_client_secret
+            and self.gmail_refresh_token
+            and not self.stub_mode
+        )
