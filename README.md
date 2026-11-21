@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.**
+**A post sales AI harness.** Current version: **v1.11.0**, 15 agents, 9 connectors, 514 tests green.
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -41,8 +41,10 @@ Missing credentials fall back to stub mode for that connector, so you can connec
 ```
 Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
-  -> Specialist agent (1 of 10, all implemented: the original 8 in v0.7,
-     value-finder in v0.9.0, salesforce-updater in v1.3.0)
+  -> Specialist agent (1 of 15, all implemented: the original 8 in v0.7,
+     value-finder in v0.9.0, salesforce-updater in v1.3.0, risk-watcher
+     in v1.6.0, escalation-manager in v1.7.0, competitive-defense in
+     v1.8.0, stakeholder-mapper in v1.9.0, case-triage in v1.10.0)
   -> Tools (9 connectors, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
@@ -411,7 +413,7 @@ files, all numbers from real harness state, nothing invented.
 
 When a store is empty the view says so; a missing or corrupt store
 file renders as an empty view, never a crash. Everything is a draft
-until I say send.
+until a human approves it.
 
 ```bash
 python -m harness.run dashboard
@@ -421,9 +423,9 @@ python -m harness.run dashboard
 Then open http://127.0.0.1:8000. Local-only, localhost, no auth. Approve
 and reject buttons call the same approval queue the CLI uses.
 
-## Planned architecture (v1.x)
+## Architecture v1.x (all shipped)
 
-Architecture first, then agents. These ship as minor releases before the
+Architecture first, then agents. These shipped as minor releases before the
 agent candidates below.
 
 | Piece | Target | What it will do |
@@ -435,7 +437,7 @@ agent candidates below.
 | scheduling | v1.4.0 (shipped) | A daemon that runs the harness on its own, so watch agents actually watch: file-backed schedules (daily/weekly, named timezone), a run-once mode for system cron, a single-instance daemon, scheduled runs draft into the approval queue only. |
 | MCP client | v1.5.0 (shipped) | A harness-side MCP client that picks up MCP servers the user already has connected: stdio and SSE, namespaced tools, selection by description, adapters, write-flag safety. |
 
-## Planned agents
+## Agents v1.6.0–v1.10.0 (all shipped)
 
 | Agent | Target | What it will do |
 |---|---|---|
@@ -449,7 +451,7 @@ agent candidates below.
 
 | Connector | Status | Tools |
 |---|---|---|
-| Salesforce | v0.2 | `salesforce_get_account`, `salesforce_list_opportunities`, `salesforce_list_cases` |
+| Salesforce | v0.2, writes v1.3.0 | `salesforce_get_account`, `salesforce_list_opportunities`, `salesforce_list_cases`, `salesforce_update_fields`, `salesforce_log_activity`, `salesforce_move_stage` |
 | Slack | v0.2 | `slack_search_messages`, `slack_list_channels`, `slack_get_thread` |
 | Gong | v0.8.2 | `gong_list_calls`, `gong_get_call_summary`, `gong_search_transcripts` |
 | HubSpot | v0.8.3 | `hubspot_get_company`, `hubspot_list_deals`, `hubspot_list_tickets` |
@@ -481,7 +483,7 @@ The MCP servers are also callable from the harness via an MCP client
 register in the registry, namespaced by server, alongside the
 in-process connector tools.
 
-## What is real vs scaffolded (v1.0.0 honesty)
+## What is real vs scaffolded (v1.11.0 honesty)
 
 **Real, tested (514 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
@@ -541,10 +543,11 @@ in-process connector tools.
   and must be corrected against the real API the first time a key is
   available.
 
-**Scaffolded / planned, not built:**
-- Architecture pieces, shipped: composition (v1.1.0), memory (v1.2.0),
+**Shipped in the v1 line, nothing scaffolded left:**
+- Architecture pieces: composition (v1.1.0), memory (v1.2.0),
   write-back (v1.3.0), scheduling (v1.4.0), MCP client (v1.5.0).
-- New agents, shipped: risk-watcher (v1.6.0), escalation-manager (v1.7.0), competitive-defense (v1.8.0), stakeholder-mapper (v1.9.0), case-triage (v1.10.0).
+- New agents: risk-watcher (v1.6.0), escalation-manager (v1.7.0), competitive-defense (v1.8.0), stakeholder-mapper (v1.9.0), case-triage (v1.10.0).
+- Finished dashboard (v1.11.0).
 
 ## Adding a connector
 
