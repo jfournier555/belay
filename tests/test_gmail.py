@@ -34,7 +34,7 @@ class TestGmailStubTools(unittest.TestCase):
     def test_search_returns_matches_with_ids(self):
         result = search_messages(_stub_config(), "Acme Corp")
         self.assertTrue(result["_stub"])
-        self.assertEqual(len(result["matches"]), 3)
+        self.assertEqual(len(result["matches"]), 4)
         for match in result["matches"]:
             self.assertTrue(match["id"])
             self.assertTrue(match["thread_id"])
@@ -136,8 +136,8 @@ class TestGmailLinks(unittest.TestCase):
         links += extract_links(
             "gmail_get_thread", get_thread(config, "18c8f5a2b3c4d5e6")
         )
-        # 3 search matches + 1 thread link; _gather dedups by URL later.
-        self.assertEqual(len(links), 4)
+        # 4 search matches + 1 thread link; _gather dedups by URL later.
+        self.assertEqual(len(links), 5)
         for link in links:
             self.assertTrue(
                 link["url"].startswith(
@@ -173,7 +173,7 @@ class TestGmailRegistryAndServer(unittest.TestCase):
         self.assertIn("gmail_search_messages", names)
         self.assertIn("gmail_get_thread", names)
         result = registry.call("gmail_search_messages", query="Acme Corp")
-        self.assertEqual(len(result["matches"]), 3)
+        self.assertEqual(len(result["matches"]), 4)
 
     def test_gmail_tools_factory(self):
         tools = gmail_tools(_stub_config())
@@ -214,8 +214,8 @@ class TestRenewalDeskGathersGmail(unittest.TestCase):
         gmail_links = [
             link for link in draft.links if "mail.google" in link["url"]
         ]
-        # Three stub matches across two threads dedup to two links.
-        self.assertEqual(len(gmail_links), 2)
+        # Four stub matches across three threads dedup to three links.
+        self.assertEqual(len(gmail_links), 3)
         for link in gmail_links:
             self.assertTrue(
                 link["url"].startswith(

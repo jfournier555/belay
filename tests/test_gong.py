@@ -59,7 +59,7 @@ class TestGongStubTools(unittest.TestCase):
     def test_search_transcripts_returns_short_excerpts(self):
         result = search_transcripts(_stub_config(), "Acme Corp")
         self.assertTrue(result["_stub"])
-        self.assertEqual(len(result["matches"]), 3)
+        self.assertEqual(len(result["matches"]), 4)
         for match in result["matches"]:
             self.assertTrue(match["call_id"])
             self.assertTrue(match["timestamp"])
@@ -158,9 +158,9 @@ class TestGongLinks(unittest.TestCase):
             "gong_search_transcripts",
             search_transcripts(config, "Acme Corp"),
         )
-        # 3 calls + 1 summary + 3 transcript matches (extract_links
+        # 3 calls + 1 summary + 4 transcript matches (extract_links
         # returns one link per match; _gather dedups by URL later).
-        self.assertEqual(len(links), 7)
+        self.assertEqual(len(links), 8)
         for link in links:
             self.assertTrue(
                 link["url"].startswith("https://app.gong.invalid/call?id="),

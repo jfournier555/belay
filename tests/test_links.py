@@ -210,7 +210,7 @@ class TestGatherLinks(unittest.TestCase):
             StubLLM(),
             TokenBudget(8000),
         )
-        self.assertEqual(len(draft.links), 13)
+        self.assertEqual(len(draft.links), 14)
         labels = [p["label"] for p in draft.proof]
         self.assertIn("Draft carries source links", labels)
         links_item = [

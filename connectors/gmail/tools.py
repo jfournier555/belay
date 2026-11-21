@@ -85,6 +85,18 @@ _STUB_MESSAGES = {
                 "expansion."
             ),
         },
+        {
+            "id": "18d01a2b3c4d5e63",
+            "thread_id": "18c8f5a2b3c4d5e8",
+            "author": "Acme Admin <admin@acme.example>",
+            "subject": "Acme Corp - evaluating RivalWorks before the renewal",
+            "date": "2026-11-15T09:12:00Z",
+            "excerpt": (
+                "Before we sign the renewal, leadership wants a look at "
+                "migrating to RivalWorks. Can you send a comparison of "
+                "the two?"
+            ),
+        },
     ],
 }
 
@@ -116,6 +128,21 @@ _STUB_THREADS = {
             "Mike SE: Demoed the new reporting to Acme Corp's ops lead. The "
             "export timeout is the one thing still blocking the "
             "expansion.",
+        ],
+    },
+    "18c8f5a2b3c4d5e8": {
+        "_stub": True,
+        "thread_id": "18c8f5a2b3c4d5e8",
+        "subject": "Acme Corp - evaluating RivalWorks before the renewal",
+        "participants": [
+            "Acme Admin <admin@acme.example>",
+            "Jane CSM <jane@cs-team.example>",
+        ],
+        "message_count": 1,
+        "excerpts": [
+            "Acme Admin: Before we sign the renewal, leadership wants "
+            "a look at migrating to RivalWorks. Can you send a "
+            "comparison of the two?",
         ],
     },
 }

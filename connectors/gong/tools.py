@@ -144,6 +144,17 @@ _STUB_TRANSCRIPT_MATCHES = {
                 "Talk to us after the fix ships."
             ),
         },
+        {
+            "call_id": "7782342274025937896",
+            "title": "Acme Corp - Renewal check-in",
+            "timestamp": "31:02",
+            "speaker": "acme-ops-lead",
+            "excerpt": (
+                "Leadership asked us to evaluate RivalWorks side by side "
+                "before we sign. Their demo is next week and the price "
+                "came in lower."
+            ),
+        },
     ],
 }
 

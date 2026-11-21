@@ -1,11 +1,11 @@
-"""The specialist agents: the twelve post-sales jobs the harness covers.
+"""The specialist agents: the thirteen post-sales jobs the harness covers.
 
-The twelve jobs are the post-sales jobs that matter: scout, briefer,
+The thirteen jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
-risk-watcher, and escalation-manager.
+risk-watcher, escalation-manager, and competitive-defense.
 
-V1 implements twelve end to end:
+V1 implements thirteen end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -59,8 +59,16 @@ V1 implements twelve end to end:
   a resolved record stays resolved. Resolving is a human decision:
   the `escalations resolve` command, or approving a closure draft the
   agent wrote when the signal was no longer detected.
+- competitive-defense: watches for displacement risk on an account
+  (competitor mentions, evaluation signals, champion doubt) and drafts
+  the defense brief: threats ranked by severity, evidence with its
+  source, where the account is vulnerable, the wedge to hold the
+  account, and the proof points to use. Threat severity is
+  harness-computed, never model prose. A rival is named only when the
+  gathered records name one, and every rival named carries its quoted
+  evidence. With no signals the draft is a clean bill, stated as such.
 
-All twelve are implemented. Every job in the harness has a working agent.
+All thirteen are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -2752,6 +2760,515 @@ class RiskWatcherAgent(Agent):
         )
 
 
+# Competitive-threat phrases, by severity class. Displacement language
+# (the account is moving to a rival) is high; evaluation language (the
+# account is comparing a rival) and champion doubt are medium. Bare
+# words like "demo" or "trial" are not signals: our own demos and trials
+# use those words too. The phrases here name a rival, a comparison, or
+# a move, so an excerpt about our own product does not fire.
+_COMPETITIVE_DISPLACEMENT_PHRASES = (
+    "migrat",
+    "switching to",
+    "moving to",
+    "moving off",
+)
+
+_COMPETITIVE_EVALUATION_PHRASES = (
+    "evaluat",
+    "side by side",
+    "comparing",
+    "comparison",
+    "their demo",
+    "their trial",
+    "their price",
+    "their pricing",
+    "alternative",
+    "competitor",
+    "rival",
+)
+
+_CHAMPION_DOUBT_PHRASES = (
+    "reconsidering",
+    "second thoughts",
+    "losing confidence",
+    "not the right fit",
+)
+
+# Sources scanned for competitive language: message and transcript
+# excerpts first, then ticket and case subjects.
+_COMPETITIVE_SOURCES = (
+    ("gmail_search_messages", "Gmail"),
+    ("gong_search_transcripts", "Gong transcripts"),
+    ("zoom_search_transcripts", "Zoom transcripts"),
+    ("slack_search_messages", "Slack"),
+)
+
+# The wedge to hold the account, per threat kind. Harness-written
+# playbook lines, never model prose: the wedge is the move, not a
+# claim about the rival.
+_COMPETITIVE_WEDGES = {
+    "displacement": (
+        "Migration has not started: the renewal is the decision point. "
+        "Hold the account by closing the open items the rival can point "
+        "at and getting the champion to defend the renewal internally "
+        "before the rival's next step."
+    ),
+    "evaluation": (
+        "The decision is still open: the renewal is unsigned and the "
+        "rival's demo has not happened yet. Win on the open items "
+        "before the demo, and make the champion the one who frames the "
+        "comparison."
+    ),
+    "champion-doubt": (
+        "The doubt is about outcomes, not the relationship: answer "
+        "with fix dates and the expansion value, not a feature list. "
+        "Give the champion something concrete to defend internally."
+    ),
+}
+
+_RIVAL_NAME_RE = re.compile(
+    r"(?:[Ee]valuat\w*|[Mm]igrat\w*\s+to|[Ss]witch\w*\s+to|[Mm]oving\s+to|"
+    r"[Cc]ompar\w+\s+(?:us\s+)?(?:to|with|against)|"
+    r"[Ll]ook\s+at\s+(?:a\s+)?(?:move\s+to\s+)?)"
+    r"\s*(?:the\s+)?([A-Z][A-Za-z0-9]{1,30})"
+)
+
+
+def _rival_name(excerpt: str) -> str:
+    """The rival named in an excerpt, or 'an unnamed rival' when the
+    excerpt names none. The name comes from the customer's own words
+    (evaluate X, migrating to X, comparison with X); the harness never
+    guesses a rival the records do not name."""
+    match = _RIVAL_NAME_RE.search(excerpt)
+    if not match:
+        return "an unnamed rival"
+    return match.group(1)
+
+
+def _competitive_phrase_hit(lowered: str) -> tuple | None:
+    """First competitive phrase in lowercased text, as (phrase,
+    severity, kind), displacement first, then evaluation, then doubt.
+    None when no phrase matches."""
+    for phrase in _COMPETITIVE_DISPLACEMENT_PHRASES:
+        if phrase in lowered:
+            return (phrase, "high", "displacement")
+    for phrase in _COMPETITIVE_EVALUATION_PHRASES:
+        if phrase in lowered:
+            return (phrase, "medium", "evaluation")
+    for phrase in _CHAMPION_DOUBT_PHRASES:
+        if phrase in lowered:
+            return (phrase, "medium", "champion-doubt")
+    return None
+
+
+def _competitive_signals(results: dict, account: str) -> list[dict]:
+    """Detect competitive threats from the gathered tool results.
+
+    Deterministic, harness-computed: the model never decides what counts
+    as a threat. Scans message and transcript excerpts plus open ticket
+    and case subjects for displacement language (high), evaluation
+    language (medium), and champion doubt (medium). One signal per
+    source at most: the first phrase hit in that source wins, and the
+    excerpt is quoted as the evidence, so every rival named carries its
+    source. A phrase hit with no rival name in the excerpt still fires
+    (the excerpt is the evidence, and the human judges it); the signal
+    says the rival is unnamed. Returns a list of {severity, kind, key,
+    rival, source, excerpt, text} dicts, high first.
+    """
+    signals: list[dict] = []
+
+    def _signal(severity, kind, hit, label, excerpt):
+        rival = _rival_name(excerpt)
+        signals.append(
+            {
+                "severity": severity,
+                "kind": kind,
+                "key": "competitive:%s:%s" % (label.lower(), rival.lower()),
+                "rival": rival,
+                "source": label,
+                "excerpt": excerpt[:200],
+                "text": (
+                    "%s %s signal in %s (%r): %r"
+                    % (
+                        rival,
+                        kind.replace("-", " "),
+                        label,
+                        hit,
+                        excerpt[:120],
+                    )
+                ),
+            }
+        )
+
+    for tool_name, label in _COMPETITIVE_SOURCES:
+        result = results.get(tool_name) or {}
+        for match in result.get("matches", []) or []:
+            excerpt = str(match.get("excerpt", "") or "")
+            hit = _competitive_phrase_hit(excerpt.lower())
+            if hit is None:
+                continue
+            phrase, severity, kind = hit
+            _signal(severity, kind, phrase, label, excerpt)
+            break
+
+    # Open tickets and cases: subject and description carry comparison
+    # or migration language. Closed records are history, not a live
+    # threat, so they are skipped the same way risk-watcher skips them.
+    for tool_name, label, records, text_fields in (
+        (
+            "zendesk_list_tickets",
+            "Zendesk",
+            (results.get("zendesk_list_tickets") or {}).get("tickets", [])
+            or [],
+            ("subject", "description"),
+        ),
+        (
+            "salesforce_list_cases",
+            "Salesforce",
+            (results.get("salesforce_list_cases") or {}).get("cases", [])
+            or [],
+            ("subject",),
+        ),
+    ):
+        for record in records:
+            if str(record.get("status", "")).lower() in (
+                "closed",
+                "solved",
+                "done",
+                "canceled",
+                "cancelled",
+            ):
+                continue
+            text = " ".join(
+                str(record.get(field, "") or "") for field in text_fields
+            )
+            hit = _competitive_phrase_hit(text.lower())
+            if hit is None:
+                continue
+            phrase, severity, kind = hit
+            _signal(severity, kind, phrase, label, text)
+            break
+
+    signals.sort(key=lambda s: _SEVERITY_RANK[s["severity"]])
+    return signals
+
+
+def _competitive_vulnerability(results: dict) -> str:
+    """Where the account is vulnerable, from the gathered records only:
+    the open renewal opportunity at risk, the open items the rival can
+    point at, and how thin the champion bench is. A part with no records
+    behind it is left out, never invented."""
+    parts = []
+    opps = results.get("salesforce_list_opportunities") or {}
+    for opp in opps.get("opportunities", []) or []:
+        if str(opp.get("type", "")).lower() != "renewal":
+            continue
+        if str(opp.get("stage", "")).lower() in ("closed won", "closed lost"):
+            continue
+        parts.append(
+            "the renewal %s (%s, stage %s, closes %s) is unsigned while "
+            "the rival is in play"
+            % (
+                opp.get("name", "opportunity"),
+                format_money(opp["amount"])
+                if isinstance(opp.get("amount"), (int, float))
+                else "amount unknown",
+                opp.get("stage", "unknown stage"),
+                opp.get("close_date", "unknown date"),
+            )
+        )
+        break
+    open_items = []
+    cases = results.get("salesforce_list_cases") or {}
+    for case in cases.get("cases", []) or []:
+        if str(case.get("status", "")).lower() in ("closed", "solved"):
+            continue
+        open_items.append(str(case.get("subject", "")))
+    tickets = results.get("zendesk_list_tickets") or {}
+    for ticket in tickets.get("tickets", []) or []:
+        if str(ticket.get("status", "")).lower() not in ("open", "pending"):
+            continue
+        open_items.append(str(ticket.get("subject", "")))
+    if open_items:
+        parts.append(
+            "open items the rival can point at: %s"
+            % "; ".join(sorted(set(open_items)))
+        )
+    champions = results.get("champify_list_champions") or {}
+    active = [
+        c
+        for c in champions.get("champions", []) or []
+        if str(c.get("status", "")).lower() == "active"
+    ]
+    if len(active) == 1:
+        parts.append(
+            "only one active champion (%s), so the defense rests on one "
+            "relationship" % active[0].get("name", "unnamed")
+        )
+    elif len(active) == 0 and champions.get("champions") is not None:
+        parts.append("no active champion in the gathered records")
+    if not parts:
+        return (
+            "No open renewal opportunity, open item, or champion list in "
+            "the gathered records; the vulnerability is unknown, not "
+            "absent."
+        )
+    return "; ".join(parts) + "."
+
+
+def _competitive_proof_points(results: dict) -> str:
+    """Proof points to use in the defense, from the gathered records
+    only: the renewal at stake, the expansion interest, and the active
+    champions by name and role. Nothing here is a claim about the
+    rival; it is what we have to defend with."""
+    points = []
+    opps = results.get("salesforce_list_opportunities") or {}
+    for opp in opps.get("opportunities", []) or []:
+        if str(opp.get("stage", "")).lower() in ("closed won", "closed lost"):
+            continue
+        points.append(
+            "%s: %s, closes %s, stage %s"
+            % (
+                opp.get("name", "opportunity"),
+                format_money(opp["amount"])
+                if isinstance(opp.get("amount"), (int, float))
+                else "amount unknown",
+                opp.get("close_date", "unknown date"),
+                opp.get("stage", "unknown stage"),
+            )
+        )
+    champions = results.get("champify_list_champions") or {}
+    active = [
+        c
+        for c in champions.get("champions", []) or []
+        if str(c.get("status", "")).lower() == "active"
+    ]
+    if active:
+        points.append(
+            "Active champions: %s"
+            % ", ".join(
+                "%s (%s)" % (c.get("name", "?"), c.get("role", "unknown role"))
+                for c in active
+            )
+        )
+    if not points:
+        return "No proof points in the gathered records."
+    return "; ".join(points) + "."
+
+
+def _competitive_defense_block(signals: list[dict], results: dict) -> str:
+    """The harness-computed defense brief block appended to the draft:
+    overall threat level, each threat with its evidence and source, the
+    vulnerability, the wedge per threat kind, and the proof points. No
+    signals means a clean bill, stated as such, never an invented
+    threat. Every rival named comes from a quoted excerpt."""
+    if not signals:
+        return (
+            "Competitive threats (harness-computed): No competitor "
+            "mentions, evaluation signals, or champion doubt found in "
+            "the gathered records. Overall threat level: none. No rival "
+            "named anywhere in messages, transcripts, tickets, or cases "
+            "for this account."
+        )
+    lines = [
+        "Competitive threats (harness-computed, severity-ranked):",
+        "Overall threat level: %s." % signals[0]["severity"],
+    ]
+    for signal in signals:
+        lines.append(
+            "- [%s] %s" % (signal["severity"], signal["text"])
+        )
+        lines.append(
+            "  Evidence: %r (%s)." % (signal["excerpt"], signal["source"])
+        )
+    lines.append("")
+    lines.append("Vulnerability: %s" % _competitive_vulnerability(results))
+    kinds = []
+    for signal in signals:
+        if signal["kind"] not in kinds:
+            kinds.append(signal["kind"])
+    for kind in kinds:
+        lines.append(
+            "Wedge (%s): %s" % (kind, _COMPETITIVE_WEDGES[kind])
+        )
+    lines.append("Proof points: %s" % _competitive_proof_points(results))
+    return "\n".join(lines)
+
+
+# The three agents whose drafts competitive-defense composes from
+# (v1.8.0): voice-of-customer first (its themes carry the rival
+# mentions), plus expansion-spotter and risk-watcher.
+_COMPETITIVE_SOURCE_AGENTS = (
+    "voice-of-customer",
+    "expansion-spotter",
+    "risk-watcher",
+)
+
+
+class CompetitiveDefenseAgent(Agent):
+    """Watches for displacement risk on an account and drafts the
+    defense brief.
+
+    Gathers: account summary, open opportunities, open support cases,
+    champion list, recent email threads, Gong and Zoom transcripts,
+    Zendesk tickets, and recent Slack signals. Drafts: a defense brief
+    with the threats ranked by severity, the evidence for each with its
+    source, where the account is vulnerable, the wedge to hold the
+    account, and the proof points to use.
+
+    Composition (v1.1.0): when prior drafts from voice-of-customer,
+    expansion-spotter, and risk-watcher exist for the account, the brief
+    is built from those drafts instead of re-gathering the same context;
+    only the fresh competitive signals (account record, opportunities,
+    champion list, Gmail, Gong, Zoom, Zendesk, Slack) are gathered
+    directly, and Salesforce cases are left to the source drafts. When
+    no prior drafts exist, the agent gathers directly, its previous
+    behavior.
+
+    Threat severity is harness-computed, never model prose: displacement
+    language is high, evaluation language and champion doubt are medium.
+    A rival is named only when the gathered records name one, and every
+    rival named carries its quoted evidence. With no signals at all the
+    draft is a clean bill, stated as such.
+    """
+
+    name = "competitive-defense"
+    display_name = "Competitive Defense"
+    description = (
+        "Watches for displacement risk: competitor mentions, evaluation "
+        "signals, champion doubt. Drafts a defense brief."
+    )
+    keywords = [
+        "competitor",
+        "competitive",
+        "competitive-defense",
+        "displacement",
+        "rival",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Cites evidence for each threat",
+            keywords=["evidence"],
+        ),
+        ProofItem(
+            "States the overall threat level",
+            keywords=["overall threat level"],
+        ),
+        ProofItem(
+            "Gives the wedge to hold the account",
+            keywords=["wedge"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _COMPETITIVE_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the fresh
+            # competitive signals are gathered directly; the source
+            # drafts carry the cases and the broader account context,
+            # and their deep links carry through to the composed draft.
+            # The draft carries a harness-written provenance line
+            # naming the agents it was composed from.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("champify_list_champions", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_search_transcripts", {"query": account, "limit": 5}),
+                ("zoom_search_transcripts", {"query": account, "limit": 5}),
+                ("zendesk_list_tickets", {"organization": account}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            # Fallback: no prior drafts for this account, gather directly.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("champify_list_champions", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_search_transcripts", {"query": account, "limit": 5}),
+                ("zoom_search_transcripts", {"query": account, "limit": 5}),
+                ("zendesk_list_tickets", {"organization": account}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        signals = _competitive_signals(results, account)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a defense brief for account %r. Cover: the "
+            "competitive threats in the context ranked by severity "
+            "(displacement language, evaluation signals, champion "
+            "doubt), the evidence for each threat with its source, "
+            "where the account is vulnerable, the wedge to hold the "
+            "account, and the proof points to use. Name a rival only "
+            "when the context names one, and quote the evidence for "
+            "every rival named. Do not invent a threat that is not in "
+            "the context." % account,
+        )
+        system = (
+            "You are the competitive-defense agent for a customer "
+            "success team. You watch for displacement risk before it "
+            "becomes a lost renewal. Rank threats by severity, cite "
+            "the evidence, and never name a rival the records do not "
+            "name. A customer evaluating another product is a threat "
+            "to answer, not a done deal: the brief is the defense play."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + _competitive_defense_block(signals, results)
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -3333,7 +3850,7 @@ class EscalationManagerAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All twelve agents, keyed by name. All implemented."""
+    """All thirteen agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -3347,6 +3864,7 @@ def build_agents() -> dict[str, Agent]:
         "salesforce-updater": SalesforceUpdaterAgent(),
         "risk-watcher": RiskWatcherAgent(),
         "escalation-manager": EscalationManagerAgent(),
+        "competitive-defense": CompetitiveDefenseAgent(),
     }
     return agents
 

@@ -297,7 +297,7 @@ class TestStdioClient(unittest.TestCase):
             "gmail_search_messages", {"query": "Acme"}
         )
         self.assertTrue(result.get("_stub"))
-        self.assertEqual(len(result["matches"]), 3)
+        self.assertEqual(len(result["matches"]), 4)
 
     def test_bad_command_raises(self):
         client = MCPClient(
