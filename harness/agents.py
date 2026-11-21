@@ -426,6 +426,51 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                     "url": "%s/mail/u/0/#inbox/%s" % (base, thread_id),
                 }
             )
+    elif tool_name in (
+        "zoom_list_recordings",
+        "zoom_get_recording_summary",
+        "zoom_search_transcripts",
+    ):
+        # Zoom links are the recording play URL the API returned (live)
+        # or the same path on the .invalid host (stub). The URL is
+        # passed through, never constructed, the same way Slack
+        # permalinks are.
+        if tool_name == "zoom_list_recordings":
+            for rec in result.get("recordings", []):
+                if rec.get("play_url"):
+                    links.append(
+                        {
+                            "label": "Zoom recording: %s"
+                            % rec.get("topic", rec.get("id", "")),
+                            "url": rec["play_url"],
+                        }
+                    )
+        elif tool_name == "zoom_get_recording_summary":
+            if result.get("play_url"):
+                links.append(
+                    {
+                        "label": "Zoom recording: %s"
+                        % result.get(
+                            "title", result.get("recording_id", "")
+                        ),
+                        "url": result["play_url"],
+                    }
+                )
+        else:
+            for match in result.get("matches", []):
+                if match.get("play_url"):
+                    links.append(
+                        {
+                            "label": "Zoom recording: %s @ %s"
+                            % (
+                                match.get(
+                                    "title", match.get("recording_id", "")
+                                ),
+                                match.get("timestamp", ""),
+                            ),
+                            "url": match["play_url"],
+                        }
+                    )
     return links
 
 
@@ -466,7 +511,7 @@ def _gather(
 # these, and a URL in the prompt is a URL the model can copy into the
 # draft. They are excluded from the rendered context, not from the
 # tool result itself, so the link extractor still sees them.
-_URL_KEYS = {"instance_url", "permalink"}
+_URL_KEYS = {"instance_url", "permalink", "play_url"}
 
 
 def _sanitize_for_prompt(value):
@@ -1102,10 +1147,10 @@ class AdvocateFinderAgent(Agent):
 class VoiceOfCustomerAgent(Agent):
     """Collects and synthesizes customer feedback for an account.
 
-    Gathers: open support cases, recent Slack signals, and Gong call
-    transcripts. Drafts: feature requests, pain points, sentiment from
-    cases, Slack, and calls, and the top themes to take back to the
-    product team.
+    Gathers: open support cases, recent Slack signals, Gong call
+    transcripts, and Zoom recording transcripts. Drafts: feature
+    requests, pain points, sentiment from cases, Slack, and calls, and
+    the top themes to take back to the product team.
     """
 
     name = "voice-of-customer"
@@ -1147,6 +1192,10 @@ class VoiceOfCustomerAgent(Agent):
             sources=["gong_search_transcripts"],
         ),
         ProofItem(
+            "Cites Zoom recording transcripts",
+            sources=["zoom_search_transcripts"],
+        ),
+        ProofItem(
             "Draft carries source links",
             requires_links=True,
         ),
@@ -1158,6 +1207,7 @@ class VoiceOfCustomerAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
             ("gong_search_transcripts", {"query": account, "limit": 5}),
+            ("zoom_search_transcripts", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
@@ -1165,8 +1215,9 @@ class VoiceOfCustomerAgent(Agent):
             context,
             "Summarize the voice of the customer for account %r. Cover: "
             "feature requests, pain points, sentiment from support cases, "
-            "Slack, and Gong call transcripts, and the top themes to take "
-            "back to the product team." % account,
+            "Slack, Gong call transcripts, and Zoom recording transcripts, "
+            "and the top themes to take back to the product team."
+            % account,
         )
         system = (
             "You are the voice of the customer for a customer success "

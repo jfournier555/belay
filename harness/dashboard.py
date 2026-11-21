@@ -132,6 +132,15 @@ def source_statuses(config: Config) -> list[dict]:
                 else "No credentials: stub data."
             ),
         },
+        {
+            "name": "Zoom",
+            "status": "live" if config.zoom_configured() else "stub",
+            "detail": (
+                "Connected."
+                if config.zoom_configured()
+                else "No credentials: stub data."
+            ),
+        },
     ]
 
 

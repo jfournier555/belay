@@ -34,6 +34,13 @@ Environment variables:
                              The connector exchanges it for an access token
                              on every call. Read-only by scope: it can
                              never send or delete mail.
+    ZOOM_ACCOUNT_ID          Zoom server-to-server OAuth account id.
+    ZOOM_CLIENT_ID           Zoom server-to-server OAuth client id.
+    ZOOM_CLIENT_SECRET       Zoom server-to-server OAuth client secret.
+                             The connector exchanges the triple for an
+                             access token (grant_type=account_credentials).
+                             The Zoom app needs the recording:read:admin
+                             scope.
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
@@ -64,6 +71,9 @@ class Config:
     gmail_client_id: str | None = None
     gmail_client_secret: str | None = None
     gmail_refresh_token: str | None = None
+    zoom_account_id: str | None = None
+    zoom_client_id: str | None = None
+    zoom_client_secret: str | None = None
     approvals_file: str = "approvals.json"
     token_budget_per_job: int = 8000
 
@@ -95,6 +105,9 @@ class Config:
             or None,
             gmail_refresh_token=os.environ.get("GMAIL_REFRESH_TOKEN")
             or None,
+            zoom_account_id=os.environ.get("ZOOM_ACCOUNT_ID") or None,
+            zoom_client_id=os.environ.get("ZOOM_CLIENT_ID") or None,
+            zoom_client_secret=os.environ.get("ZOOM_CLIENT_SECRET") or None,
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
@@ -138,5 +151,15 @@ class Config:
             self.gmail_client_id
             and self.gmail_client_secret
             and self.gmail_refresh_token
+            and not self.stub_mode
+        )
+
+    def zoom_configured(self) -> bool:
+        """True when the Zoom server-to-server OAuth triple is present
+        and stub mode is off."""
+        return bool(
+            self.zoom_account_id
+            and self.zoom_client_id
+            and self.zoom_client_secret
             and not self.stub_mode
         )

@@ -237,7 +237,7 @@ class TestVoiceOfCustomerGathersGong(unittest.TestCase):
             p for p in draft.proof if p["label"] == "Cites Gong call transcripts"
         ][0]
         self.assertTrue(gong_item["passed"])
-        self.assertEqual(len(draft.proof), 7)
+        self.assertEqual(len(draft.proof), 8)
         gong_links = [
             link for link in draft.links if "gong" in link["url"]
         ]
