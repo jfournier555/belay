@@ -85,7 +85,6 @@ def source_statuses(config: Config) -> list[dict]:
 
     A source is live only when its credentials are present and stub mode
     is off. Otherwise it is stub: realistic sample data, no API call.
-    Gong is planned, not built.
     """
     return [
         {
@@ -108,8 +107,12 @@ def source_statuses(config: Config) -> list[dict]:
         },
         {
             "name": "Gong",
-            "status": "planned",
-            "detail": "Planned connector, not built yet.",
+            "status": "live" if config.gong_configured() else "stub",
+            "detail": (
+                "Connected."
+                if config.gong_configured()
+                else "No credentials: stub data."
+            ),
         },
     ]
 

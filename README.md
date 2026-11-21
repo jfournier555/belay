@@ -162,7 +162,7 @@ agent candidates below.
 |---|---|---|
 | Salesforce | v0.2 | `salesforce_get_account`, `salesforce_list_opportunities`, `salesforce_list_cases` |
 | Slack | v0.2 | `slack_search_messages`, `slack_list_channels`, `slack_get_thread` |
-| Gong | planned | See `connectors/gong/README.md` for the planned tools. |
+| Gong | v0.8.2 | `gong_list_calls`, `gong_get_call_summary`, `gong_search_transcripts` |
 
 Each connector exposes its tools two ways, from one implementation
 (`tools.py`): in-process, through the harness tool registry (the v0.2 path),
@@ -172,6 +172,7 @@ MCP-capable LLM can call. Run a connector as an MCP server with:
 ```bash
 python -m connectors.salesforce.server
 python -m connectors.slack.server
+python -m connectors.gong.server
 ```
 
 Calling the MCP servers from the harness via an MCP client (instead of
@@ -180,7 +181,7 @@ and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v0.8 honesty)
 
-**Real, tested (90 unit tests, all passing):**
+**Real, tested (110 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
@@ -192,7 +193,7 @@ and shared, so the cutover is a client, not a rewrite.
   links to the records it cites; failures are flagged in the draft
   metadata and shown in `approvals show`, never a block, and no
   aggregate score is shown anywhere.
-- Salesforce and Slack MCP servers: verified over the real MCP protocol
+- Salesforce, Slack, and Gong MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
 - The dashboard (v0.8.0): local FastAPI server reading the live queue
@@ -202,12 +203,13 @@ and shared, so the cutover is a client, not a rewrite.
   state; an empty queue renders an honest empty state.
 
 **Written, not verified against a live system:**
-- The live Salesforce REST/SOQL calls and the live Slack Web API calls.
-  They are real code, written against the documented APIs, but no
-  credentials were available while building v0.2, so they have not run
-  against a real org or workspace. Treat them as "written, not verified"
-  until someone runs them with real credentials. Stub mode is what runs
-  in the demo and the tests.
+- The live Salesforce REST/SOQL calls, the live Slack Web API calls,
+  and the live Gong REST API calls. They are real code, written against
+  the documented APIs, but no credentials were available while building
+  v0.2 (Salesforce/Slack) or v0.8.2 (Gong), so they have not run against
+  a real org, workspace, or Gong account. Treat them as "written, not
+  verified" until someone runs them with real credentials. Stub mode is
+  what runs in the demo and the tests.
 
 **Scaffolded / planned, not built:**
 - value-finder (v0.9.0): realized and unrealized value in money or time.
@@ -218,7 +220,6 @@ and shared, so the cutover is a client, not a rewrite.
 - New agents, planned: risk-watcher, escalation-manager,
   competitive-defense, stakeholder-mapper, case-triage. They ship as minor
   releases in the v1 line (v1.6.0–v1.10.0).
-- The Gong connector (see `connectors/gong/README.md`).
 - The MCP client inside the harness (v1.5.0). Until then, v1 calls
   connector tools in-process; the MCP servers are standalone.
 
@@ -228,8 +229,8 @@ Copy `connectors/slack/` to `connectors/<name>/`. Write the pure tool
 functions in `tools.py` (plain functions, return dicts, summary-first).
 Wrap them in `server.py` with FastMCP. Register them in
 `harness/run.py` `build_registry()`. Add the env vars to `.env.example`.
-See `connectors/base.py` for the pattern, and `connectors/gong/README.md`
-for a worked example of what a planned connector looks like.
+See `connectors/base.py` for the pattern, and `connectors/gong/` for a
+worked example of a built connector.
 
 ## Related work
 

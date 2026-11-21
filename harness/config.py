@@ -17,6 +17,10 @@ Environment variables:
     SALESFORCE_INSTANCE_URL  e.g. https://mycompany.my.salesforce.com
     SALESFORCE_ACCESS_TOKEN  OAuth access token for the Salesforce REST API.
     SLACK_BOT_TOKEN          Slack bot token (xoxb-...).
+    GONG_ACCESS_TOKEN        Gong API access token (Bearer auth).
+    GONG_API_BASE_URL        Gong API base URL. Default: https://api.gong.io/v2
+                             (regional instances take the form
+                             https://{region}.api.gong.io/v2).
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
@@ -40,6 +44,8 @@ class Config:
     salesforce_instance_url: str | None = None
     salesforce_access_token: str | None = None
     slack_bot_token: str | None = None
+    gong_access_token: str | None = None
+    gong_api_base_url: str = "https://api.gong.io/v2"
     approvals_file: str = "approvals.json"
     token_budget_per_job: int = 8000
 
@@ -59,6 +65,10 @@ class Config:
             salesforce_access_token=os.environ.get("SALESFORCE_ACCESS_TOKEN")
             or None,
             slack_bot_token=os.environ.get("SLACK_BOT_TOKEN") or None,
+            gong_access_token=os.environ.get("GONG_ACCESS_TOKEN") or None,
+            gong_api_base_url=os.environ.get(
+                "GONG_API_BASE_URL", "https://api.gong.io/v2"
+            ),
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
@@ -87,3 +97,7 @@ class Config:
     def slack_configured(self) -> bool:
         """True when a Slack token is present and stub mode is off."""
         return bool(self.slack_bot_token and not self.stub_mode)
+
+    def gong_configured(self) -> bool:
+        """True when a Gong token is present and stub mode is off."""
+        return bool(self.gong_access_token and not self.stub_mode)

@@ -8,6 +8,7 @@ against its proof checklist before the draft reaches the approval queue.
 
 import unittest
 
+from connectors.gong.tools import gong_tools
 from connectors.salesforce.tools import salesforce_tools
 from connectors.slack.tools import slack_tools
 from harness import AGENTS, TokenBudget, ToolRegistry
@@ -25,6 +26,8 @@ def _stub_registry() -> ToolRegistry:
     for tool in salesforce_tools(config):
         registry.register(tool)
     for tool in slack_tools(config):
+        registry.register(tool)
+    for tool in gong_tools(config):
         registry.register(tool)
     return registry
 
@@ -122,6 +125,7 @@ class TestAgents(unittest.TestCase):
         self.assertEqual(draft.agent, "voice-of-customer")
         self.assertIn("salesforce_list_cases", draft.sources)
         self.assertIn("slack_search_messages", draft.sources)
+        self.assertIn("gong_search_transcripts", draft.sources)
         # The voice of customer reads what customers say, not the account
         # record or the pipeline.
         self.assertNotIn("salesforce_get_account", draft.sources)
@@ -134,7 +138,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("sentiment", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 6)
+        self.assertEqual(len(draft.proof), 7)
 
     def test_voc_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)

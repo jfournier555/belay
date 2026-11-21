@@ -26,6 +26,7 @@ import argparse
 import json
 import sys
 
+from connectors.gong.tools import gong_tools
 from connectors.salesforce.tools import salesforce_tools
 from connectors.slack.tools import slack_tools
 
@@ -41,11 +42,13 @@ from harness import (
 
 
 def build_registry(config: Config) -> ToolRegistry:
-    """Register the v1 connector tools (Salesforce + Slack)."""
+    """Register the connector tools (Salesforce + Slack + Gong)."""
     registry = ToolRegistry()
     for tool in salesforce_tools(config):
         registry.register(tool)
     for tool in slack_tools(config):
+        registry.register(tool)
+    for tool in gong_tools(config):
         registry.register(tool)
     return registry
 

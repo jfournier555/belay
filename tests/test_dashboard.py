@@ -129,28 +129,32 @@ class TestSourceStatuses(unittest.TestCase):
         statuses = {s["name"]: s["status"] for s in source_statuses(config)}
         self.assertEqual(statuses["Salesforce"], "stub")
         self.assertEqual(statuses["Slack"], "stub")
-        self.assertEqual(statuses["Gong"], "planned")
+        self.assertEqual(statuses["Gong"], "stub")
 
     def test_credentials_mean_live(self):
         config = Config(
             salesforce_instance_url="https://x.my.salesforce.com",
             salesforce_access_token="token",
             slack_bot_token="xoxb-1",
+            gong_access_token="gong-token",
         )
         statuses = {s["name"]: s["status"] for s in source_statuses(config)}
         self.assertEqual(statuses["Salesforce"], "live")
         self.assertEqual(statuses["Slack"], "live")
+        self.assertEqual(statuses["Gong"], "live")
 
     def test_stub_mode_overrides_credentials(self):
         config = Config(
             salesforce_instance_url="https://x.my.salesforce.com",
             salesforce_access_token="token",
             slack_bot_token="xoxb-1",
+            gong_access_token="gong-token",
             stub_mode=True,
         )
         statuses = {s["name"]: s["status"] for s in source_statuses(config)}
         self.assertEqual(statuses["Salesforce"], "stub")
         self.assertEqual(statuses["Slack"], "stub")
+        self.assertEqual(statuses["Gong"], "stub")
 
 
 class TestEventLogAndTokens(unittest.TestCase):

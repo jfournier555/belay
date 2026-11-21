@@ -23,8 +23,8 @@ V1 implements eight end to end:
 - advocate-finder: finds champions and advocates: who uses the product
   most, who praises it in Slack, who would make a good reference.
 - voice-of-customer: collects and synthesizes customer feedback: feature
-  requests, pain points, sentiment from cases and Slack, and the top
-  themes to take back to the product team.
+  requests, pain points, sentiment from cases, Slack, and Gong call
+  transcripts, and the top themes to take back to the product team.
 
 All eight are implemented. Every job in the harness has a working agent.
 
@@ -198,6 +198,20 @@ def _build_prompt(agent_name: str, context: dict, task: str) -> str:
 STUB_SALESFORCE_HOST = "https://stub.salesforce.invalid"
 
 
+# Gong call links are built from the call id: the app URL is fixed,
+# https://app.gong.io/call?id=<callId>. Stub data links to the same
+# path on .invalid, so a stub link is well-formed but unmistakably fake.
+STUB_GONG_HOST = "https://app.gong.invalid"
+GONG_APP_HOST = "https://app.gong.io"
+
+
+def _gong_base(result: dict) -> str:
+    """The base URL for Gong deep links from a tool result."""
+    if result.get("_stub"):
+        return STUB_GONG_HOST
+    return GONG_APP_HOST
+
+
 def _salesforce_base(result: dict) -> str | None:
     """The base URL for Salesforce deep links from a tool result."""
     if result.get("instance_url"):
@@ -270,6 +284,46 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                         "url": match["permalink"],
                     }
                 )
+    elif tool_name in (
+        "gong_list_calls",
+        "gong_get_call_summary",
+        "gong_search_transcripts",
+    ):
+        base = _gong_base(result)
+        if tool_name == "gong_list_calls":
+            for call in result.get("calls", []):
+                if call.get("id"):
+                    links.append(
+                        {
+                            "label": "Gong call: %s"
+                            % call.get("title", call["id"]),
+                            "url": "%s/call?id=%s" % (base, call["id"]),
+                        }
+                    )
+        elif tool_name == "gong_get_call_summary":
+            call_id = result.get("call_id")
+            if call_id:
+                links.append(
+                    {
+                        "label": "Gong call: %s"
+                        % result.get("title", call_id),
+                        "url": "%s/call?id=%s" % (base, call_id),
+                    }
+                )
+        else:
+            for match in result.get("matches", []):
+                if match.get("call_id"):
+                    links.append(
+                        {
+                            "label": "Gong call: %s @ %s"
+                            % (
+                                match.get("title", match["call_id"]),
+                                match.get("timestamp", ""),
+                            ),
+                            "url": "%s/call?id=%s"
+                            % (base, match["call_id"]),
+                        }
+                    )
     return links
 
 
@@ -907,9 +961,10 @@ class AdvocateFinderAgent(Agent):
 class VoiceOfCustomerAgent(Agent):
     """Collects and synthesizes customer feedback for an account.
 
-    Gathers: open support cases and recent Slack signals. Drafts:
-    feature requests, pain points, sentiment from cases and Slack, and
-    the top themes to take back to the product team.
+    Gathers: open support cases, recent Slack signals, and Gong call
+    transcripts. Drafts: feature requests, pain points, sentiment from
+    cases, Slack, and calls, and the top themes to take back to the
+    product team.
     """
 
     name = "voice-of-customer"
@@ -947,6 +1002,10 @@ class VoiceOfCustomerAgent(Agent):
             sources=["slack_search_messages"],
         ),
         ProofItem(
+            "Cites Gong call transcripts",
+            sources=["gong_search_transcripts"],
+        ),
+        ProofItem(
             "Draft carries source links",
             requires_links=True,
         ),
@@ -957,15 +1016,16 @@ class VoiceOfCustomerAgent(Agent):
         calls = [
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
+            ("gong_search_transcripts", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
             "Summarize the voice of the customer for account %r. Cover: "
-            "feature requests, pain points, sentiment from support cases "
-            "and Slack, and the top themes to take back to the product "
-            "team." % account,
+            "feature requests, pain points, sentiment from support cases, "
+            "Slack, and Gong call transcripts, and the top themes to take "
+            "back to the product team." % account,
         )
         system = (
             "You are the voice of the customer for a customer success "
