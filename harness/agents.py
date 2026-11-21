@@ -60,6 +60,7 @@ from dataclasses import dataclass, field
 
 from .approvals import ApprovalQueue
 from .llm import LLMClient
+from .memory import AccountMemory
 from .registry import ToolRegistry
 from .summarizer import TokenBudget, estimate_tokens
 
@@ -814,6 +815,9 @@ class RenewalDeskAgent(Agent):
         calls.append(("gmail_search_messages", {"query": account, "limit": 5}))
         calls.append(("linear_list_issues", {}))
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -885,6 +889,9 @@ class BrieferAgent(Agent):
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -960,6 +967,9 @@ class ExpansionSpotterAgent(Agent):
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -1044,6 +1054,9 @@ class OnboardingGuideAgent(Agent):
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -1129,6 +1142,9 @@ class ScoutAgent(Agent):
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -1232,6 +1248,9 @@ class QBRBuilderAgent(Agent):
                 if link.get("url") not in seen_urls:
                     seen_urls.add(link.get("url"))
                     links.append(link)
+            memory_text = _memory_context(job, account, budget)
+            if memory_text:
+                context["memory"] = memory_text
             prompt = _build_prompt(
                 self.name,
                 context,
@@ -1281,6 +1300,9 @@ class QBRBuilderAgent(Agent):
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -1375,6 +1397,9 @@ class AdvocateFinderAgent(Agent):
             ("champify_list_job_changes", {"account": account, "days": 90}),
         ]
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -1482,6 +1507,9 @@ class VoiceOfCustomerAgent(Agent):
             ("zoom_search_transcripts", {"query": account, "limit": 5}),
         ]
         context, sources, links = _gather(registry, calls, budget)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         prompt = _build_prompt(
             self.name,
             context,
@@ -1718,6 +1746,26 @@ def _agent_list_text(agents: tuple) -> str:
     return "%s, or %s" % (", ".join(agents[:-1]), agents[-1])
 
 
+def _memory_context(job: dict, account: str, budget: TokenBudget) -> str:
+    """Past drafts, decisions, and corrections for this account, from
+    the memory file the job names. Bounded by the token budget:
+    newest records first, stops when a record no longer fits. Empty
+    when the job opts out (--no-memory), names no memory file, or the
+    account has no memory. Memory is an input to the draft, not a
+    replacement for fresh tool results, so it is loaded after the
+    gather and only spends what the budget has left."""
+    if job.get("no_memory"):
+        return ""
+    path = job.get("memory_file")
+    if not path:
+        return ""
+    try:
+        memory = AccountMemory(path)
+    except Exception:
+        return ""
+    return memory.render(account, budget)
+
+
 def _prior_drafts(
     job: dict, account: str, agents: tuple = _PRIOR_DRAFT_AGENTS
 ) -> str:
@@ -1867,6 +1915,9 @@ class ValueFinderAgent(Agent):
             registry, calls, budget
         )
         context["prior_agent_drafts"] = _prior_drafts(job, account)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
         hours_saved = job.get("hours_saved")
         if hours_saved is not None:
             try:

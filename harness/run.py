@@ -4,17 +4,30 @@ Usage:
     python -m harness.run run --agent renewal-desk --account "Acme Corp"
     python -m harness.run run --text "draft a renewal plan for Acme Corp"
     python -m harness.run run --agent briefer --account "Acme Corp" --stub
+    python -m harness.run run --agent renewal-desk --account "Acme Corp" --no-memory
     python -m harness.run agents
     python -m harness.run tools
     python -m harness.run approvals list
     python -m harness.run approvals show <id>
     python -m harness.run approvals approve <id> [--note "..."]
     python -m harness.run approvals reject <id> [--note "..."]
+    python -m harness.run approvals edit <id> --draft "..." | --file <path>
+    python -m harness.run memory show "Acme Corp"
+    python -m harness.run memory clear "Acme Corp"
+    python -m harness.run memory accounts
     python -m harness.run dashboard [--port 8000]
 
 The `run` command routes the job, runs the agent, and submits the draft to
 the approval queue. Nothing is sent anywhere. A human approves it with
 `approvals approve` before it leaves the harness.
+
+Every decision in the queue is recorded as memory for the draft's
+account (memory.json, HARNESS_MEMORY_FILE to move it): approvals,
+rejections, and edits. An edit stores the correction itself. The next
+run for the same account loads that memory as context, newest first,
+bounded by the token budget. --no-memory runs cold. `memory show` and
+`memory clear` inspect and forget one account's memory; memory never
+crosses accounts.
 
 --stub forces stub mode for all connectors and the LLM, so the full loop
 runs with no credentials and no network calls.
@@ -38,6 +51,7 @@ from connectors.zoom.tools import zoom_tools
 
 from harness import (
     AGENTS,
+    AccountMemory,
     ApprovalQueue,
     Config,
     Router,
@@ -117,6 +131,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     agent = AGENTS[route.agent]
     print("Routed to %s (%s, %s)." % (agent.display_name, route.agent, route.reason))
+    # Memory travels with the job: the memory file for injection, and
+    # the opt-out flag. Every agent loads the account's memory from
+    # it (bounded by the budget); --no-memory runs cold.
+    job["memory_file"] = config.memory_file
+    if args.no_memory:
+        job["no_memory"] = True
     if route.agent in ("value-finder", "qbr-builder"):
         # Value-finder and qbr-builder read prior drafts from the
         # approval queue (value-finder synthesizes them, qbr-builder
@@ -190,9 +210,15 @@ def cmd_tools(args: argparse.Namespace) -> int:
 
 
 def cmd_approvals(args: argparse.Namespace) -> int:
-    """Manage the approval queue."""
+    """Manage the approval queue.
+
+    The queue is built with the memory store attached, so every
+    decision here (approve, reject, edit) is recorded as memory for
+    the draft's account."""
     config = Config.from_env()
-    queue = ApprovalQueue(config.approvals_file)
+    queue = ApprovalQueue(
+        config.approvals_file, memory=AccountMemory(config.memory_file)
+    )
     if args.action == "list":
         items = queue.list_pending()
         if not items:
@@ -237,7 +263,55 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         item = queue.reject(args.item_id, note=args.note)
         print("Rejected: %s" % item.id)
         return 0
+    if args.action == "edit":
+        if args.file:
+            with open(args.file, "r", encoding="utf-8") as f:
+                new_draft = f.read()
+        elif args.draft:
+            new_draft = args.draft
+        else:
+            print(
+                "approvals edit needs --draft \"...\" or --file <path>.",
+                file=sys.stderr,
+            )
+            return 1
+        item = queue.edit(args.item_id, new_draft)
+        print("Edited: %s" % item.id)
+        return 0
     print("Unknown approvals action: %s" % args.action, file=sys.stderr)
+    return 1
+
+
+def cmd_memory(args: argparse.Namespace) -> int:
+    """Inspect or forget one account's memory.
+
+    show prints the account's records, newest first, with the
+    correction on edited drafts. clear forgets that account only.
+    accounts lists every account with memory."""
+    config = Config.from_env()
+    memory = AccountMemory(config.memory_file)
+    if args.action == "show":
+        records = memory.records_for(args.account)
+        if not records:
+            print("No memory for %s." % args.account)
+            return 0
+        print("%d record(s) for %s:" % (len(records), args.account))
+        for record in records:
+            print("- " + record.render().replace("\n", "\n  "))
+        return 0
+    if args.action == "clear":
+        removed = memory.clear(args.account)
+        print("Forgot %d record(s) for %s." % (removed, args.account))
+        return 0
+    if args.action == "accounts":
+        entries = memory.accounts()
+        if not entries:
+            print("No memory stored.")
+            return 0
+        for account, count in entries:
+            print("%-30s %d record(s)" % (account, count))
+        return 0
+    print("Unknown memory action: %s" % args.action, file=sys.stderr)
     return 1
 
 
@@ -259,6 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--show", action="store_true", help="Print the draft after queueing it.")
     run_p.add_argument("--hourly-rate", type=float, default=None, help="Loaded hourly rate in dollars, for value-finder (overrides HARNESS_LOADED_HOURLY_RATE).")
     run_p.add_argument("--hours-saved", type=float, default=None, help="Hours saved by automation, for value-finder (supplied by the CSM; never assumed).")
+    run_p.add_argument("--no-memory", action="store_true", help="Run cold: do not load the account's memory as context.")
     run_p.set_defaults(func=cmd_run)
 
     agents_p = sub.add_parser("agents", help="List the nine agents.")
@@ -269,10 +344,17 @@ def build_parser() -> argparse.ArgumentParser:
     tools_p.set_defaults(func=cmd_tools)
 
     appr_p = sub.add_parser("approvals", help="Manage the approval queue.")
-    appr_p.add_argument("action", choices=["list", "show", "approve", "reject"])
+    appr_p.add_argument("action", choices=["list", "show", "approve", "reject", "edit"])
     appr_p.add_argument("item_id", nargs="?", help="Approval item id.")
     appr_p.add_argument("--note", help="Note to attach to the decision.")
+    appr_p.add_argument("--draft", help="New draft text for approvals edit.")
+    appr_p.add_argument("--file", help="File holding the new draft text for approvals edit.")
     appr_p.set_defaults(func=cmd_approvals)
+
+    mem_p = sub.add_parser("memory", help="Inspect or forget an account's memory.")
+    mem_p.add_argument("action", choices=["show", "clear", "accounts"])
+    mem_p.add_argument("account", nargs="?", help="Account name, for show and clear.")
+    mem_p.set_defaults(func=cmd_memory)
 
     dash_p = sub.add_parser("dashboard", help="Serve the dashboard on localhost.")
     dash_p.add_argument("--port", type=int, default=8000)
@@ -283,8 +365,10 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    if args.command == "approvals" and args.action in ("show", "approve", "reject") and not args.item_id:
+    if args.command == "approvals" and args.action in ("show", "approve", "reject", "edit") and not args.item_id:
         parser.error("approvals %s needs an item id." % args.action)
+    if args.command == "memory" and args.action in ("show", "clear") and not args.account:
+        parser.error("memory %s needs an account." % args.action)
     return args.func(args)
 
 

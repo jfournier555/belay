@@ -56,6 +56,10 @@ Environment variables:
                              https://api.champify.io/v1
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
+    HARNESS_MEMORY_FILE      Path to the per-account memory JSON file.
+                             Default: memory.json (in the working dir).
+                             Memory is local only; nothing in it is ever
+                             sent anywhere.
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
     HARNESS_LOADED_HOURLY_RATE
                              Loaded hourly rate in dollars, used by
@@ -115,6 +119,7 @@ class Config:
     champify_api_key: str | None = None
     champify_api_base_url: str = "https://api.champify.io/v1"
     approvals_file: str = "approvals.json"
+    memory_file: str = "memory.json"
     token_budget_per_job: int = 8000
     loaded_hourly_rate: float | None = None
 
@@ -160,6 +165,7 @@ class Config:
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
+            memory_file=os.environ.get("HARNESS_MEMORY_FILE", "memory.json"),
             token_budget_per_job=int(
                 os.environ.get("HARNESS_TOKEN_BUDGET", "8000")
             ),

@@ -31,6 +31,7 @@ from . import AGENTS, __version__
 from .agents import _extract_account
 from .approvals import ApprovalQueue
 from .config import Config
+from .memory import AccountMemory
 from .summarizer import estimate_tokens
 
 _TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
@@ -292,8 +293,11 @@ def create_app(
 
     def get_queue() -> ApprovalQueue:
         # Re-read the file on every request so drafts queued by the CLI
-        # show up without restarting the server.
-        return queue or ApprovalQueue(cfg.approvals_file)
+        # show up without restarting the server. The memory store is
+        # attached so dashboard decisions are recorded as memory too.
+        return queue or ApprovalQueue(
+            cfg.approvals_file, memory=AccountMemory(cfg.memory_file)
+        )
 
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:

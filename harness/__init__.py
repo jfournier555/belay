@@ -10,6 +10,7 @@ Public surface:
 - Router: cheap routing to the right specialist agent (router.py).
 - ToolRegistry: the tools agents may call, summary-first (registry.py).
 - ApprovalQueue: file-backed human review queue (approvals.py).
+- AccountMemory: per-account memory across runs (memory.py).
 - AGENTS: the nine specialist agents, all implemented (agents.py).
 - TokenBudget: per-job token budget enforcement (summarizer.py).
 """
@@ -20,18 +21,21 @@ from .agents import AGENTS, Agent, Draft
 from .approvals import ApprovalItem, ApprovalQueue
 from .config import Config
 from .llm import LLMClient, OpenAICompatibleLLM, StubLLM, get_llm
+from .memory import AccountMemory, MemoryRecord
 from .registry import Tool, ToolRegistry
 from .router import RouteResult, Router
 from .summarizer import TokenBudget, estimate_tokens
 
 __all__ = [
     "AGENTS",
+    "AccountMemory",
     "Agent",
     "ApprovalItem",
     "ApprovalQueue",
     "Config",
     "Draft",
     "LLMClient",
+    "MemoryRecord",
     "OpenAICompatibleLLM",
     "RouteResult",
     "Router",
@@ -43,4 +47,4 @@ __all__ = [
     "get_llm",
 ]
 
-__version__ = "1.1.0"
+__version__ = "1.2.0"

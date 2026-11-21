@@ -163,6 +163,30 @@ harness-written line names the agents it was composed from.
 When no prior drafts exist, qbr-builder gathers directly, exactly as
 before. Composition is an optimization, never a hard dependency.
 
+## Memory
+
+The harness remembers what the human decided. Every decision in the
+approval queue is recorded for that draft's account: approved,
+rejected, and edited. An edit stores the correction itself, a diff
+when the change is small, the edited text when the draft was
+rewritten. The next run for the same account loads that memory as
+context, newest first, bounded by the token budget. Fresh tool results
+still come first; memory only spends what the budget has left.
+
+Memory never crosses accounts, and it is local only: one JSON file
+(`memory.json`, `HARNESS_MEMORY_FILE` to move it). Nothing in it is
+ever sent anywhere. At most 50 records are kept per account.
+
+```bash
+# Run cold, without memory.
+python -m harness.run run --agent renewal-desk --account "Acme Corp" --no-memory
+
+# Inspect one account's memory, or forget it.
+python -m harness.run memory show "Acme Corp"
+python -m harness.run memory clear "Acme Corp"
+python -m harness.run memory accounts
+```
+
 ## Dashboard
 
 The dashboard is the UI the CSM operates from. It reads the live
@@ -190,7 +214,7 @@ agent candidates below.
 |---|---|---|
 | dashboard | v0.8.0 (shipped) | Local web UI over the live approval queue: stat strip, queue with completeness checks, source links, and approve/reject, sources, agents, event log, token budget. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision. |
 | composition | v1.1.0 (shipped) | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts, falling back to direct gathering when no prior drafts exist. |
-| memory | v1.2.0 | Persistent memory across runs: past drafts, decisions, and corrections per account. |
+| memory | v1.2.0 (shipped) | Persistent memory across runs: past drafts, decisions, and corrections per account, injected as context next run, bounded by the token budget. Capture in the approval queue; edits store the correction itself. Local only, never crosses accounts. |
 | write-back | v1.3.0 | The first write tools plus approval-gated execution. The Salesforce updater agent is the first use. |
 | scheduling | v1.4.0 | A daemon that runs the harness on its own, so watch agents actually watch. |
 | MCP client | v1.5.0 | A harness-side MCP client that picks up MCP servers the user already has connected. |

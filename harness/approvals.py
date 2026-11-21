@@ -60,10 +60,19 @@ class ApprovalItem:
 
 
 class ApprovalQueue:
-    """File-backed queue of drafts awaiting human review."""
+    """File-backed queue of drafts awaiting human review.
 
-    def __init__(self, path: str = "approvals.json") -> None:
+    Takes an optional AccountMemory store: when one is attached,
+    every decision (approve, reject, edit) is recorded as memory for
+    that draft's account, so the next run for the account learns from
+    it. Memory never breaks the queue: a failed record is swallowed
+    here, and a queue built without a store behaves exactly as
+    before.
+    """
+
+    def __init__(self, path: str = "approvals.json", memory=None) -> None:
         self.path = path
+        self.memory = memory
         self._items: dict[str, ApprovalItem] = {}
         self._load()
 
@@ -133,6 +142,18 @@ class ApprovalQueue:
         """All items, oldest first."""
         return sorted(self._items.values(), key=lambda i: i.created_at)
 
+    def _remember(
+        self, item: ApprovalItem, outcome: str, old_draft: str | None = None
+    ) -> None:
+        """Record a decision as memory for the draft's account. A
+        failed record never breaks the queue."""
+        if self.memory is None:
+            return
+        try:
+            self.memory.record(item, outcome, old_draft=old_draft)
+        except Exception:
+            return
+
     def _decide(
         self, item_id: str, status: str, note: str | None
     ) -> ApprovalItem:
@@ -143,6 +164,7 @@ class ApprovalQueue:
         item.decided_at = _now_iso()
         item.note = note
         self._save()
+        self._remember(item, status)
         return item
 
     def approve(self, item_id: str, note: str | None = None) -> ApprovalItem:
@@ -155,12 +177,16 @@ class ApprovalQueue:
 
     def edit(self, item_id: str, new_draft: str) -> ApprovalItem:
         """Replace a draft with a human-edited version. Status becomes
-        edited, which still counts as needing a final approve before use."""
+        edited, which still counts as needing a final approve before use.
+        The edit is recorded as memory with the correction itself, so
+        the next run for the account learns what the human changed."""
         item = self.get(item_id)
         if item is None:
             raise KeyError("Unknown approval item: %r" % item_id)
+        old_draft = item.draft
         item.draft = new_draft
         item.status = "edited"
         item.decided_at = _now_iso()
         self._save()
+        self._remember(item, "edited", old_draft=old_draft)
         return item

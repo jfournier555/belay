@@ -31,7 +31,7 @@ class TestCli(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 main(["--help"])
         self.assertEqual(caught.exception.code, 0)
-        for command in ("run", "agents", "tools", "approvals", "dashboard"):
+        for command in ("run", "agents", "tools", "approvals", "dashboard", "memory"):
             self.assertIn(command, buf.getvalue())
 
     def test_agents_lists_nine_implemented(self):
