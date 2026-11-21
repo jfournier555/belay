@@ -49,6 +49,7 @@ from .scheduler import (
     next_run_after,
     validate_schedule,
 )
+from .setup import is_first_run, seed_demo
 from .summarizer import estimate_tokens
 
 _TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
@@ -318,6 +319,9 @@ def build_state(
         "writeback": writeback_view(queue),
         "mcp_servers": mcp_servers_view(mcp_servers),
         "stub_mode": config.stub_mode,
+        "first_run": is_first_run(
+            config, queue, memory, schedules, escalations
+        ),
     }
 
 
@@ -616,6 +620,25 @@ def create_app(
                 detail="Escalation %s is already resolved" % record_id,
             )
         return JSONResponse(store.get(record_id).to_dict())
+
+    @app.post("/api/demo/seed")
+    def seed_demo_endpoint() -> JSONResponse:
+        # Fill the stores with demo data from the dashboard banner
+        # (v1.12.0): same seed the CLI runs, never over real data.
+        # A refusal is a 409: the stores already hold real records.
+        # Non-interactive: no model pull offer, stub fallback when
+        # Ollama is not reachable, said plainly in the report.
+        report = seed_demo(cfg, confirm=False, interactive=False)
+        if report["status"] == "refused":
+            raise HTTPException(
+                status_code=409,
+                detail="Stores already hold real data: %s"
+                % ", ".join(
+                    "%s: %d" % kv
+                    for kv in sorted(report.get("real", {}).items())
+                ),
+            )
+        return JSONResponse(report)
 
     @app.post("/api/mcp-servers")
     def add_mcp_server(body: dict) -> JSONResponse:

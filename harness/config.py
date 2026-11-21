@@ -7,9 +7,15 @@ can be demoed and tested without any accounts.
 
 Environment variables:
     HARNESS_LLM_BASE_URL   Base URL for an OpenAI-compatible chat API.
-                           Default: https://api.openai.com/v1
-    HARNESS_LLM_API_KEY    API key for the LLM. If unset, the stub LLM is used.
-    HARNESS_LLM_MODEL      Model for agent drafts. Default: gpt-4o-mini.
+                           Default: http://localhost:11434/v1 (Ollama,
+                           local, no key). Point it at a hosted
+                           provider to use that provider instead.
+    HARNESS_LLM_API_KEY    API key for a hosted LLM provider. If unset
+                           and Ollama is not reachable, the stub LLM
+                           is used.
+    HARNESS_LLM_MODEL      Model for agent drafts. Default: llama3.1:8b
+                           (Ollama). Each hosted provider has its own
+                           sensible default, set by the setup wizard.
     HARNESS_ROUTER_MODEL   Model for the router (small/cheap). Default: same
                            as HARNESS_LLM_MODEL.
     HARNESS_STUB           Set to "1" to force stub mode for all connectors,
@@ -91,6 +97,18 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from dotenv import load_dotenv
+
+# The default LLM is Ollama, self-hosted and local: a new user gets
+# real responses out of the box with no API key. The OpenAI defaults
+# are kept for the legacy case (an API key with no explicit base URL
+# is treated as an OpenAI key, the pre-1.12.0 default).
+OLLAMA_BASE_URL = "http://localhost:11434/v1"
+OLLAMA_API_BASE = "http://localhost:11434"
+OLLAMA_DEFAULT_MODEL = "llama3.1:8b"
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+OPENAI_DEFAULT_MODEL = "gpt-4o-mini"
+
 
 def _parse_rate(raw: str | None) -> float | None:
     """Parse a loaded hourly rate from the environment. A missing,
@@ -110,9 +128,9 @@ def _parse_rate(raw: str | None) -> float | None:
 class Config:
     """Harness configuration, loaded from the environment."""
 
-    llm_base_url: str = "https://api.openai.com/v1"
+    llm_base_url: str = OLLAMA_BASE_URL
     llm_api_key: str | None = None
-    llm_model: str = "gpt-4o-mini"
+    llm_model: str = OLLAMA_DEFAULT_MODEL
     router_model: str | None = None
     stub_mode: bool = False
     salesforce_instance_url: str | None = None
@@ -144,13 +162,19 @@ class Config:
 
     @classmethod
     def from_env(cls) -> "Config":
-        """Build a Config from environment variables."""
+        """Build a Config from environment variables.
+
+        A .env file in the working directory (or above it) is loaded
+        first, so values written there take effect without exporting
+        anything. Real environment variables always win: load_dotenv
+        never overrides one that is already set."""
+        load_dotenv()
         return cls(
             llm_base_url=os.environ.get(
-                "HARNESS_LLM_BASE_URL", "https://api.openai.com/v1"
+                "HARNESS_LLM_BASE_URL", OLLAMA_BASE_URL
             ),
             llm_api_key=os.environ.get("HARNESS_LLM_API_KEY") or None,
-            llm_model=os.environ.get("HARNESS_LLM_MODEL", "gpt-4o-mini"),
+            llm_model=os.environ.get("HARNESS_LLM_MODEL", OLLAMA_DEFAULT_MODEL),
             router_model=os.environ.get("HARNESS_ROUTER_MODEL") or None,
             stub_mode=os.environ.get("HARNESS_STUB", "") == "1",
             salesforce_instance_url=os.environ.get("SALESFORCE_INSTANCE_URL")
@@ -208,7 +232,10 @@ class Config:
         return self.router_model or self.llm_model
 
     def llm_configured(self) -> bool:
-        """True when a real LLM can be called (an API key is present)."""
+        """True when an API key for a hosted provider is present.
+        Ollama needs no key, so this says nothing about Ollama: use
+        get_llm in llm.py to resolve the default chain (Ollama if
+        reachable, then a key provider, then the stub)."""
         return bool(self.llm_api_key)
 
     def salesforce_configured(self) -> bool:

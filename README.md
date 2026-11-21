@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v1.11.0**, 15 agents, 9 connectors, 514 tests green.
+**A post sales AI harness.** Current version: **v1.12.0**, 15 agents, 9 connectors, 577 tests green.
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -16,24 +16,52 @@ cd belay
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install -e .
-cp .env.example .env
 ```
 
-Python 3.11 or newer. The demo needs no credentials and no network: stub data plus the stub LLM. The commands below call the venv binaries directly (`.venv/bin/python`), so they work in bash, zsh, and fish alike with no activation step. If you prefer to activate the venv, use `source .venv/bin/activate` in bash/zsh or `source .venv/bin/activate.fish` in fish; plain `python` then works, but the bare `activate` script is bash syntax and fails in fish.
+Python 3.11 or newer. The commands below call the venv binaries directly (`.venv/bin/python`), so they work in bash, zsh, and fish alike with no activation step. If you prefer to activate the venv, use `source .venv/bin/activate` in bash/zsh or `source .venv/bin/activate.fish` in fish; plain `python` then works, but the bare `activate` script is bash syntax and fails in fish.
+
+Then run the first-run wizard. It asks one question with two answers:
 
 ```bash
-.venv/bin/python -m harness.run run --agent renewal-desk --account "Acme Corp" --stub --show
+.venv/bin/python -m harness.run setup
 ```
 
-The account is the unit: every run names one account, and every agent works from it. Connect each source once in `.env`; there is no per-agent or per-subaccount setup, subaccounts follow the account hierarchy in your CRM.
+1. **Fill with Demo data?** Seeds the stores with 4 demo drafts (one approved, one edited, two pending), 2 memory records, a daily schedule, and 3 open escalations, so the dashboard shows a lived-in harness instead of empty views. The drafts are generated through Ollama when it is reachable (real responses); otherwise they are stub-labeled and the output says so plainly. Refuses to seed over real data without explicit confirmation; clear it anytime with `python -m harness.run setup --clear-demo`.
+2. **Run Setup Wizard?** Walks the LLM provider choice plus the nine connectors (Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, Champify), writes them to `.env` preserving existing entries, and verifies each one live where a check exists. Secrets are never printed.
 
-To go live, fill in `.env` with the credentials you have, starting with Salesforce and Slack, then run without `--stub`:
+### The LLM: Ollama is the default
+
+A new user gets real responses out of the box with no API key. The default LLM is **Ollama**, self-hosted and local (`llama3.1:8b`), reached at `http://localhost:11434`. The resolution order is: Ollama if reachable, then a configured API key provider, then the stub. The stub is the labeled fallback, never the silent default: every stub draft says so in its header.
+
+If Ollama is not installed, the wizard offers to install it for you (official distribution only, explicit yes, exact command shown first): Linux via the official install script, macOS via Homebrew or the official download, Windows via winget or the official installer. After install it starts the server, verifies reachability, and offers to pull the model. Decline, and it falls back to an API key or stub.
+
+To install Ollama by hand:
 
 ```bash
-python -m harness.run run --agent renewal-desk --account "Acme Corp"
+# Linux
+curl -fsSL https://ollama.com/install.sh | sh
+# macOS
+brew install --cask ollama
+# Windows
+winget install Ollama.Ollama
 ```
 
-Missing credentials fall back to stub mode for that connector, so you can connect one source at a time.
+Then pull the default model and start the server:
+
+```bash
+ollama pull llama3.1:8b
+ollama serve
+```
+
+The wizard also lists the hosted providers it can talk to (OpenAI, OpenRouter, Groq, Together, DeepSeek, Mistral) plus a Custom endpoint for anything else OpenAI-compatible. Each provider entry carries its default base URL and model; the wizard prompts for the API key and model only. A provider picked in the wizard wins over a locally running Ollama: your choice is not overridden.
+
+To go live with real accounts, fill in `.env` with the credentials you have (or run the wizard), then run without `--stub`:
+
+```bash
+.venv/bin/python -m harness.run run --agent renewal-desk --account "Acme Corp"
+```
+
+Missing credentials fall back to stub mode for that connector, so you can connect one source at a time. The account is the unit: every run names one account, and every agent works from it. Connect each source once in `.env`; there is no per-agent or per-subaccount setup, subaccounts follow the account hierarchy in your CRM.
 
 ## How it works
 
@@ -120,11 +148,12 @@ python -m harness.run approvals approve <id>
 
 Copy `.env.example` to `.env` and fill in what you have. Everything is
 optional: missing credentials fall back to stub mode for that connector,
-and a missing LLM key falls back to the stub LLM.
+and the LLM falls back to Ollama when it is reachable, then to the stub
+(when neither Ollama nor an API key is available).
 
 ```bash
 cp .env.example .env
-# HARNESS_LLM_API_KEY=...        (OpenAI, or any OpenAI-compatible key)
+# HARNESS_LLM_API_KEY=...        (only for a hosted provider; Ollama needs no key)
 # SALESFORCE_INSTANCE_URL=...    (e.g. https://mycompany.my.salesforce.com)
 # SALESFORCE_ACCESS_TOKEN=...    (OAuth access token)
 # SLACK_BOT_TOKEN=...            (xoxb-...)

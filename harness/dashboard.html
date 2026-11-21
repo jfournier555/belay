@@ -164,6 +164,17 @@
   }
   textarea.edit-box { width: 100%; min-height: 140px; margin: 8px 0; }
   .form-error { color: var(--red); font-size: 12px; margin-top: 8px; }
+  .first-run {
+    background: var(--panel); border: 1px solid var(--blue-dim);
+    border-radius: 8px; padding: 14px 16px; margin-bottom: 16px;
+  }
+  .first-run h2 { margin: 0 0 6px; font-size: 15px; }
+  .first-run p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  .first-run code {
+    color: var(--text); background: var(--bg);
+    padding: 1px 5px; border-radius: 4px;
+  }
+  .first-run .actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
   .write-line { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .write-line b { color: var(--text); }
   .write-line .applied { color: var(--green); }
@@ -192,6 +203,7 @@
   <button data-view="agents">Agents</button>
 </nav>
 <main>
+  <div id="first-run"></div>
   <section class="view active" id="view-overview">
     <section class="stats" id="stats"></section>
     <section class="stats" id="overview-stats"></section>
@@ -330,6 +342,27 @@ function statCard(label, num, hint, warn) {
 function render(state) {
   document.getElementById("version").textContent =
     "v" + state.version + (state.stub_mode ? " · stub mode" : "");
+  var fr = document.getElementById("first-run");
+  if (state.first_run) {
+    fr.innerHTML = '<div class="first-run"><h2>First run: nothing is set up yet</h2>' +
+      '<p>The stores are empty and no credentials are configured. Fill them with demo data to see a lived-in harness, or run the setup wizard from the CLI to pick an LLM (Ollama is the default, no key) and connect your sources.</p>' +
+      '<div class="actions"><button class="approve" id="demo-seed-btn">Fill with demo data</button>' +
+      '<span class="note">or run: <code>python -m harness.run setup</code></span></div>' +
+      '<div class="form-error" id="first-run-error"></div></div>';
+    document.getElementById("demo-seed-btn").addEventListener("click", async function () {
+      var btn = this; btn.disabled = true;
+      try {
+        await api("/api/demo/seed", { method: "POST" });
+      } catch (e) {
+        document.getElementById("first-run-error").textContent = e.message;
+        btn.disabled = false;
+        return;
+      }
+      loadState();
+    });
+  } else {
+    fr.innerHTML = "";
+  }
   var s = state.stats;
   document.getElementById("stats").innerHTML =
     statCard("Accounts watched", s.accounts_watched, "distinct accounts in the queue") +

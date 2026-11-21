@@ -225,3 +225,13 @@ class EscalationStore:
             record.note = note
         self._save()
         return True
+
+    def remove(self, record_id: str) -> bool:
+        """Delete one record. True when one was removed. Used by the
+        demo-data clear (v1.12.0): only the seeded ids are removed,
+        never anything else."""
+        if record_id not in self._records:
+            return False
+        del self._records[record_id]
+        self._save()
+        return True

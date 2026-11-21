@@ -253,3 +253,13 @@ class ApprovalQueue:
         self._save()
         self._remember(item, "edited", old_draft=old_draft)
         return item
+
+    def remove(self, item_id: str) -> bool:
+        """Delete one item from the queue. True when one was removed.
+        Used by the demo-data clear (v1.12.0): only the seeded ids
+        are removed, never anything else."""
+        if item_id not in self._items:
+            return False
+        del self._items[item_id]
+        self._save()
+        return True

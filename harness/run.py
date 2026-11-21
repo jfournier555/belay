@@ -28,6 +28,7 @@ Usage:
     python -m harness.run escalations list
     python -m harness.run escalations show <id>
     python -m harness.run escalations resolve <id> [--note "..."]
+    python -m harness.run setup [--demo | --wizard | --clear-demo]
     python -m harness.run dashboard [--port 8000]
 
 The `run` command routes the job, runs the agent, and submits the draft to
@@ -83,6 +84,7 @@ from harness import (
     __version__,
     get_llm,
 )
+from harness.llm import StubLLM
 from harness.scheduler import (
     ScheduleStore,
     SchedulerAlreadyRunning,
@@ -95,6 +97,13 @@ from harness.mcp_client import (
     MCPClient,
     MCPServerStore,
     load_external_tools,
+)
+from harness.setup import (
+    clear_demo,
+    print_setup_hint,
+    prompt_setup_choice,
+    run_setup_wizard,
+    seed_demo,
 )
 from harness.writeback import (
     execute_writes,
@@ -158,6 +167,57 @@ def build_registry(config: Config) -> ToolRegistry:
     return registry
 
 
+def cmd_setup(args: argparse.Namespace) -> int:
+    """First run: demo data or the setup wizard (v1.12.0).
+
+    --demo fills the stores with demo data (refuses over real
+    data unless --yes). --wizard walks the LLM provider choice and
+    the nine connectors, writing .env. --clear-demo removes only the seeded
+    records. With no flag and an interactive terminal, it asks the
+    one question with two answers; without a terminal it says so
+    and exits 2."""
+    config = Config.from_env()
+    if args.clear_demo:
+        report = clear_demo(config)
+        return 0
+    if args.demo:
+        report = seed_demo(
+            config, confirm=bool(args.yes), interactive=sys.stdin.isatty()
+        )
+        if report["status"] == "seeded":
+            return 0
+        if report["status"] == "already-seeded":
+            print(
+                "Demo data is already seeded. Clear it first with: "
+                "python -m harness.run setup --clear-demo"
+            )
+            return 0
+        return 1
+    if args.wizard:
+        run_setup_wizard(config)
+        return 0
+    if not sys.stdin.isatty():
+        print("First run. Two ways in:")
+        print("  1) Fill with Demo data  (--demo)")
+        print("  2) Run Setup Wizard     (--wizard)")
+        print("Not an interactive terminal: re-run with --demo or --wizard.")
+        return 2
+    choice = prompt_setup_choice()
+    if choice == "demo":
+        report = seed_demo(config)
+        if report["status"] == "seeded":
+            return 0
+        if report["status"] == "already-seeded":
+            print(
+                "Demo data is already seeded. Clear it first with: "
+                "python -m harness.run setup --clear-demo"
+            )
+            return 0
+        return 1
+    run_setup_wizard(config)
+    return 0
+
+
 def cmd_dashboard(args: argparse.Namespace) -> int:
     """Serve the dashboard on localhost (reads the live approval queue)."""
     from harness.dashboard import main as dashboard_main
@@ -182,7 +242,9 @@ def execute_job(config: Config, job: dict):
     llm = get_llm(config)
     router = Router(
         agents=AGENTS,
-        llm=llm if config.llm_configured() else None,
+        # The router uses the LLM when it is a real client (Ollama or
+        # a key provider); a stub would return stub text, not a route.
+        llm=llm if not isinstance(llm, StubLLM) else None,
         router_model=config.effective_router_model,
     )
     route = router.route(job)
@@ -255,6 +317,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     config = Config.from_env()
     if args.stub:
         config.stub_mode = True
+    else:
+        # First run, interactively: one line pointing at setup, then
+        # the run goes ahead anyway. The wizard never blocks a run.
+        print_setup_hint(config, interactive=sys.stdin.isatty())
     job: dict = {"text": args.text or ""}
     if args.agent:
         job["agent"] = args.agent
@@ -830,6 +896,13 @@ def build_parser() -> argparse.ArgumentParser:
     dash_p = sub.add_parser("dashboard", help="Serve the dashboard on localhost.")
     dash_p.add_argument("--port", type=int, default=8000)
     dash_p.set_defaults(func=cmd_dashboard)
+
+    setup_p = sub.add_parser("setup", help="First run: demo data or the setup wizard.")
+    setup_p.add_argument("--demo", action="store_true", help="Fill the stores with demo data.")
+    setup_p.add_argument("--wizard", action="store_true", help="Walk the LLM provider choice and connectors, writing .env.")
+    setup_p.add_argument("--clear-demo", action="store_true", help="Remove demo-seeded records only.")
+    setup_p.add_argument("--yes", action="store_true", help="With --demo: seed even over real data.")
+    setup_p.set_defaults(func=cmd_setup)
 
     mcp_p = sub.add_parser("mcp-servers", help="List, add, or remove external MCP servers.")
     mcp_p.add_argument("action", choices=["list", "add", "remove"])

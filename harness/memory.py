@@ -259,6 +259,21 @@ class AccountMemory:
             self._save()
         return removed
 
+    def remove_record(self, account: str, record_id: str) -> bool:
+        """Delete one record for one account. True when one was
+        removed. Used by the demo-data clear (v1.12.0): only the
+        seeded record ids are removed, never anything else."""
+        records = self._records.get(account, [])
+        kept = [record for record in records if record.id != record_id]
+        if len(kept) == len(records):
+            return False
+        if kept:
+            self._records[account] = kept
+        else:
+            del self._records[account]
+        self._save()
+        return True
+
     def accounts(self) -> list[tuple[str, int]]:
         """Accounts with memory, and how many records each holds."""
         return sorted(
