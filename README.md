@@ -103,7 +103,7 @@ python -m harness.run run --text "draft a renewal plan for Acme Corp" --stub
 # HARNESS_LOADED_HOURLY_RATE in the environment.
 python -m harness.run run --agent value-finder --account "Acme Corp" --stub --hourly-rate 150 --hours-saved 10 --show
 
-# See the thirteen agents and the registered tools.
+# See the fourteen agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
 
@@ -132,7 +132,7 @@ Then run without `--stub`:
 python -m harness.run run --agent renewal-desk --account "Acme Corp"
 ```
 
-## The thirteen agents
+## The fourteen agents
 
 Each agent owns one job, not a schedule. Cadence is the scheduler
 (v1.4.0), a separate architecture piece.
@@ -152,6 +152,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | risk-watcher | implemented | Watches for churn signals: champion departure, ticket spikes, stalled renewals, sponsor disengagement. Drafts a risk brief with signals ranked by severity (harness-computed), evidence, and a next step. On champion departure it asks whether the mandate changed, who the successor is, and what the successor's priorities are. With no signals the draft is a clean bill. Composes from prior renewal-desk, advocate-finder, and voice-of-customer drafts when they exist; gathers directly otherwise. |
 | escalation-manager | implemented | Owns escalations end to end: drafts the escalation plan (situation with evidence, people to loop in, the ask, exec update and customer comms as drafts, fallback if it does not land) for high-severity signals, and tracks each escalation open, escalated, resolved in one file per signal per account. A second run for the same signal drafts a status note, not a second plan; approving a plan moves its record to escalated; a resolved record stays resolved. Composes from prior risk-watcher, renewal-desk, and voice-of-customer drafts when they exist; gathers directly otherwise. |
 | competitive-defense | implemented | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. Drafts a defense brief with threats ranked by severity (harness-computed), evidence with its source, where the account is vulnerable, the wedge to hold the account, and the proof points to use. A rival is named only when the gathered records name one. With no signals the draft is a clean bill. Composes from prior voice-of-customer, expansion-spotter, and risk-watcher drafts when they exist; gathers directly otherwise. |
+| stakeholder-mapper | implemented | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. Each person carries a role and an influence score (harness-computed, from observable signals only), the evidence behind both, and the relationships the records show. A role the records do not support stays unknown; the coverage gaps (no economic buyer, a departed champion with no successor named, a stakeholder known only by a display name or handle) are named, never papered over. With no people the map is empty. Composes from prior advocate-finder, risk-watcher, and voice-of-customer drafts when they exist; gathers directly otherwise. |
 
 ## Composition
 
@@ -186,6 +187,13 @@ account, the defense brief is built from those drafts; only the fresh
 competitive signals (account record, opportunities, champion list,
 Gmail, Gong, Zoom, Zendesk, Slack) are gathered directly, and
 Salesforce cases are left to the source drafts.
+
+The fifth use is stakeholder-mapper. When prior drafts from
+advocate-finder, risk-watcher, and voice-of-customer exist for the
+account, the map is built from those drafts; only the fresh person
+signals (account record, champion list and job changes, Gmail, Gong
+calls, Zoom recordings, Slack) are gathered directly, and the
+transcripts are left to the source drafts.
 
 ## Memory
 
@@ -407,7 +415,7 @@ agent candidates below.
 | risk-watcher | v1.6.0 (shipped) | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. When a champion leaves, it asks whether the org mandate changed, names the successor question, and validates the successor's priorities. |
 | escalation-manager | v1.7.0 (shipped) | Owns escalations end to end: drafts the escalation plan (situation, people, ask, exec update, customer comms, fallback) for high-severity signals, and tracks each escalation open, escalated, resolved, one record per signal per account. |
 | competitive-defense | v1.8.0 (shipped) | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. Drafts the defense brief: threats ranked by severity (harness-computed), evidence with its source, the vulnerability, the wedge to hold the account, and the proof points to use. A rival is named only when the records name one. |
-| stakeholder-mapper | v1.9.0 | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. Records influence, not just titles. |
+| stakeholder-mapper | v1.9.0 (shipped) | Builds the relationship map: users, champions, economic buyers, blockers, and how they connect. Records influence, not just titles. |
 | case-triage | v1.10.0 | Classifies incoming cases by severity and drafts the engineering bug report. |
 
 ## Connectors
@@ -448,14 +456,15 @@ in-process connector tools.
 
 ## What is real vs scaffolded (v1.0.0 honesty)
 
-**Real, tested (457 unit tests, all passing):**
+**Real, tested (475 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- All thirteen agents, end to end, in stub mode: renewal desk, briefer,
+- All fourteen agents, end to end, in stub mode: renewal desk, briefer,
   expansion spotter, onboarding guide, scout, qbr builder, advocate
   finder, voice of customer, value finder, Salesforce updater, risk
-  watcher, escalation manager, and competitive defense.
+  watcher, escalation manager, competitive defense, and stakeholder
+  mapper.
 - Write-back: the updater agent drafts changes with a harness-computed
   dry-run preview; only an approved write draft executes, exactly once
   per change, and rejected drafts never execute; stub writes simulate
@@ -506,8 +515,8 @@ in-process connector tools.
 **Scaffolded / planned, not built:**
 - Architecture pieces, shipped: composition (v1.1.0), memory (v1.2.0),
   write-back (v1.3.0), scheduling (v1.4.0), MCP client (v1.5.0).
-- New agents, shipped: risk-watcher (v1.6.0), escalation-manager (v1.7.0), competitive-defense (v1.8.0).
-- New agents, planned: stakeholder-mapper, case-triage. They ship as minor releases in the v1 line (v1.9.0–v1.10.0).
+- New agents, shipped: risk-watcher (v1.6.0), escalation-manager (v1.7.0), competitive-defense (v1.8.0), stakeholder-mapper (v1.9.0).
+- New agents, planned: case-triage. It ships as a minor release in the v1 line (v1.10.0).
 
 ## Adding a connector
 

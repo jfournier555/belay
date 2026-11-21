@@ -200,13 +200,15 @@ def execute_job(config: Config, job: dict):
         "risk-watcher",
         "escalation-manager",
         "competitive-defense",
+        "stakeholder-mapper",
     ):
         # Value-finder and qbr-builder read prior drafts from the
         # approval queue (value-finder synthesizes them, qbr-builder
         # composes from them); salesforce-updater reads them for
         # context on what needs updating; risk-watcher,
-        # escalation-manager, and competitive-defense compose from
-        # them. The queue path travels with the job.
+        # escalation-manager, competitive-defense, and
+        # stakeholder-mapper compose from them. The queue path travels
+        # with the job.
         job.setdefault("approvals_file", config.approvals_file)
     if route.agent == "escalation-manager":
         # The escalation store travels with the job too: the agent
@@ -308,7 +310,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_agents(_args: argparse.Namespace) -> int:
-    """List the thirteen agents and whether each is implemented in v1."""
+    """List the fourteen agents and whether each is implemented in v1."""
     for name in sorted(AGENTS):
         agent = AGENTS[name]
         status = "implemented" if agent.implemented else "planned"
@@ -782,7 +784,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--no-memory", action="store_true", help="Run cold: do not load the account's memory as context.")
     run_p.set_defaults(func=cmd_run)
 
-    agents_p = sub.add_parser("agents", help="List the thirteen agents.")
+    agents_p = sub.add_parser("agents", help="List the fourteen agents.")
     agents_p.set_defaults(func=cmd_agents)
 
     tools_p = sub.add_parser("tools", help="List registered connector tools.")

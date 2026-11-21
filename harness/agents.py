@@ -1,11 +1,12 @@
-"""The specialist agents: the thirteen post-sales jobs the harness covers.
+"""The specialist agents: the fourteen post-sales jobs the harness covers.
 
-The thirteen jobs are the post-sales jobs that matter: scout, briefer,
+The fourteen jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
-risk-watcher, escalation-manager, and competitive-defense.
+risk-watcher, escalation-manager, competitive-defense, and
+stakeholder-mapper.
 
-V1 implements thirteen end to end:
+V1 implements fourteen end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -67,8 +68,19 @@ V1 implements thirteen end to end:
   harness-computed, never model prose. A rival is named only when the
   gathered records name one, and every rival named carries its quoted
   evidence. With no signals the draft is a clean bill, stated as such.
+- stakeholder-mapper: builds the relationship map for an account
+  (users, champions, economic buyers, blockers, and how they connect).
+  The map records influence, not just titles: who listens to whom, who
+  has defended spend, who controls budget. Influence is scored on
+  observable signals, never assumed: an active champion and a senior
+  title score high, presence across several sources scores, a handle
+  with no name or title scores unknown. Every person, role, and
+  relationship comes from a gathered record and carries its source; a
+  role the records do not support stays unknown, and the coverage gaps
+  (no economic buyer, an empty champion seat, a successor never named)
+  are named, never papered over.
 
-All thirteen are implemented. Every job in the harness has a working agent.
+All fourteen are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -3269,6 +3281,684 @@ class CompetitiveDefenseAgent(Agent):
         )
 
 
+# The three agents whose drafts stakeholder-mapper composes from
+# (v1.9.0): advocate-finder first (its champions carry roles and
+# influence), plus risk-watcher and voice-of-customer.
+_STAKEHOLDER_SOURCE_AGENTS = (
+    "advocate-finder",
+    "risk-watcher",
+    "voice-of-customer",
+)
+
+
+# Words in a recorded job title that signal seniority (influence) or
+# budget authority (economic buyer). A title alone never makes
+# someone a champion; only a champion record does that.
+_SENIOR_TITLE_WORDS = ("vp", "director", "head", "chief", "president")
+_BUDGET_TITLE_WORDS = (
+    "cfo",
+    "chief financial",
+    "vp finance",
+    "vice president finance",
+    "procurement",
+)
+# Words in a display name that mark it as a function label, not a
+# person's name: "Acme Admin" is a role, not a name.
+_GENERIC_NAME_WORDS = ("admin", "support", "team", "ops", "owner", "user", "lead")
+
+
+def _person_key(raw: str) -> str:
+    """Normalize a name or handle for merging: the display name from
+    Gmail ("Jane CSM <jane@cs-team.example>"), the handle from Gong
+    ("jane-csm"), and the Salesforce owner ("Jane CSM") are the same
+    person. The email part, case, and punctuation are dropped."""
+    name = str(raw or "").split("<")[0].strip()
+    cleaned = "".join(ch if ch.isalnum() else " " for ch in name.lower())
+    return " ".join(cleaned.split())
+
+
+def _is_handle(raw: str) -> bool:
+    """True when the name is only a handle: lowercase, hyphenated,
+    no space, like "acme-ops-lead". A display name with a space is a
+    name, even when it is a role label like "Acme Admin"."""
+    name = str(raw or "").split("<")[0].strip()
+    return " " not in name and "-" in name
+
+
+def _is_generic_label(name: str) -> bool:
+    """True when the display name is a function label, not a person's
+    name: any word in it is a generic role word."""
+    words = _person_key(name).split()
+    return any(word in _GENERIC_NAME_WORDS for word in words)
+
+
+def _stakeholder_role(person: dict) -> str:
+    """Role from record evidence only. A champion record makes a
+    champion; a moved champion is a former champion; the account
+    owner is the account owner. A budget title (CFO, finance,
+    procurement) makes an economic buyer. Anything else is unknown,
+    never guessed from a first name or a handle."""
+    if person["champion_status"] == "active":
+        return "champion"
+    if person["champion_status"] == "moved":
+        return "former champion"
+    title = (person.get("title") or "").lower()
+    if any(word in title for word in _BUDGET_TITLE_WORDS):
+        return "economic buyer"
+    if person["is_owner"]:
+        return "account owner"
+    return "unknown"
+
+
+def _stakeholder_influence(person: dict) -> str:
+    """Influence scored on observable signals, never assumed: an
+    active champion (+2), a senior title (+1), presence across three
+    or more sources (+1). High at 3, medium at 1. A person known only
+    by a handle, or who left the account, scores unknown: there is
+    nothing to score. Influence is a customer-side measure; our own
+    team is listed without one."""
+    if person["side"] == "internal":
+        return "n/a"
+    if person["champion_status"] == "moved":
+        return "unknown"
+    if person["handle_only"]:
+        return "unknown"
+    score = 0
+    if person["champion_status"] == "active":
+        score += 2
+    title_words = (person.get("title") or "").lower().split()
+    title = " ".join(title_words)
+    if any(word in title_words for word in _SENIOR_TITLE_WORDS) or (
+        "vice president" in title
+    ):
+        score += 1
+    if len(person["sources"]) >= 3:
+        score += 1
+    if score >= 3:
+        return "high"
+    if score >= 1:
+        return "medium"
+    return "low"
+
+
+def _stakeholder_people(results: dict) -> list[dict]:
+    """The people on the account, merged across the gathered records.
+    One entry per person, keyed by normalized name, so "Jane CSM"
+    (Salesforce owner, Gmail author) and "jane-csm" (Gong, Zoom,
+    Slack) are one person, not three. Only people the records name;
+    nobody is invented. Side (customer vs our team) is decided from
+    the records: the account owner is ours, an email from the owner's
+    domain is ours, and a handle ending in -csm or -se is ours."""
+    people: dict[str, dict] = {}
+
+    def person_for(raw: str) -> dict | None:
+        key = _person_key(raw)
+        if not key:
+            return None
+        person = people.get(key)
+        if person is None:
+            display = str(raw).split("<")[0].strip()
+            person = {
+                "key": key,
+                "name": display,
+                "title": "",
+                "side": "customer",
+                "sources": set(),
+                "evidence": [],
+                "champion_status": None,
+                "champion_since": None,
+                "moved_to": None,
+                "promoted": None,
+                "is_owner": False,
+                "handle_only": _is_handle(display),
+                "emails": set(),
+            }
+            people[key] = person
+        return person
+
+    def prefer_display(person: dict, raw: str) -> None:
+        """Keep the most name-like display form: a display name with
+        a space beats a hyphenated handle."""
+        display = str(raw).split("<")[0].strip()
+        if " " in display and _is_handle(person["name"]):
+            person["name"] = display
+            person["handle_only"] = False
+
+    account = results.get("salesforce_get_account") or {}
+    owner = str(account.get("owner") or "").strip()
+    owner_key = _person_key(owner)
+    if owner:
+        person = person_for(owner)
+        person["side"] = "internal"
+        person["is_owner"] = True
+        person["sources"].add("salesforce_get_account")
+        person["evidence"].append("Account owner (Salesforce)")
+
+    champions = results.get("champify_list_champions") or {}
+    for champ in champions.get("champions", []) or []:
+        name = str(champ.get("name") or "").strip()
+        if not name:
+            continue
+        person = person_for(name)
+        person["title"] = str(champ.get("role") or "")
+        person["champion_status"] = (
+            str(champ.get("status") or "").lower() or None
+        )
+        person["champion_since"] = champ.get("champion_since")
+        person["sources"].add("champify_list_champions")
+        person["evidence"].append(
+            "Champion record (%s, %s)"
+            % (
+                person["title"] or "unknown title",
+                person["champion_status"] or "unknown status",
+            )
+        )
+
+    changes = results.get("champify_list_job_changes") or {}
+    for change in changes.get("job_changes", []) or []:
+        name = str(change.get("name") or "").strip()
+        if not name:
+            continue
+        person = person_for(name)
+        person["sources"].add("champify_list_job_changes")
+        prev_company = change.get("previous_company")
+        new_company = change.get("new_company")
+        changed_at = change.get("changed_at") or "date unknown"
+        if new_company and prev_company and new_company != prev_company:
+            person["moved_to"] = {
+                "company": new_company,
+                "role": change.get("new_role"),
+                "changed_at": change.get("changed_at"),
+            }
+            person["evidence"].append(
+                "Moved %s -> %s (%s)" % (prev_company, new_company, changed_at)
+            )
+        elif new_company and new_company == prev_company:
+            person["promoted"] = {
+                "from": change.get("previous_role"),
+                "to": change.get("new_role"),
+                "changed_at": change.get("changed_at"),
+            }
+            person["evidence"].append(
+                "Promoted %s -> %s (%s)"
+                % (
+                    change.get("previous_role") or "unknown role",
+                    change.get("new_role") or "unknown role",
+                    changed_at,
+                )
+            )
+
+    def count_appearances(
+        items: list, key_fn, source: str, label: str, one: str, many: str
+    ) -> None:
+        counts: dict[str, int] = {}
+        for item in items:
+            raw = key_fn(item)
+            if not raw:
+                continue
+            person = person_for(raw)
+            if person is None:
+                continue
+            prefer_display(person, raw)
+            if "<" in str(raw) and ">" in str(raw):
+                person["emails"].add(
+                    str(raw).split("<", 1)[1].split(">", 1)[0].strip()
+                )
+            person["sources"].add(source)
+            counts[person["key"]] = counts.get(person["key"], 0) + 1
+        for key, count in counts.items():
+            people[key]["evidence"].append(
+                "%s (%d %s)" % (label, count, one if count == 1 else many)
+            )
+
+    gmail = results.get("gmail_search_messages") or {}
+    count_appearances(
+        gmail.get("matches", []) or [],
+        lambda m: m.get("author", ""),
+        "gmail_search_messages",
+        "Email author",
+        "message",
+        "messages",
+    )
+    calls = results.get("gong_list_calls") or {}
+    call_people: list[str] = []
+    for call in calls.get("calls", []) or []:
+        call_people.extend(call.get("participants", []) or [])
+    count_appearances(
+        call_people,
+        lambda p: p,
+        "gong_list_calls",
+        "Call participant",
+        "call",
+        "calls",
+    )
+    gong_transcripts = results.get("gong_search_transcripts") or {}
+    count_appearances(
+        gong_transcripts.get("matches", []) or [],
+        lambda m: m.get("speaker", ""),
+        "gong_search_transcripts",
+        "Gong transcript speaker",
+        "excerpt",
+        "excerpts",
+    )
+    recordings = results.get("zoom_list_recordings") or {}
+    count_appearances(
+        recordings.get("recordings", []) or [],
+        lambda r: r.get("host", ""),
+        "zoom_list_recordings",
+        "Recording host",
+        "recording",
+        "recordings",
+    )
+    zoom_transcripts = results.get("zoom_search_transcripts") or {}
+    count_appearances(
+        zoom_transcripts.get("matches", []) or [],
+        lambda m: m.get("speaker", ""),
+        "zoom_search_transcripts",
+        "Zoom transcript speaker",
+        "excerpt",
+        "excerpts",
+    )
+    slack = results.get("slack_search_messages") or {}
+    count_appearances(
+        slack.get("matches", []) or [],
+        lambda m: m.get("author", ""),
+        "slack_search_messages",
+        "Slack author",
+        "message",
+        "messages",
+    )
+
+    # Side: our team. The owner is ours. An email from the owner's
+    # domain is ours (the stub's cs-team.example; live, whatever
+    # domain the owner's address is on). A handle ending in -csm or
+    # -se is ours: the harness's own team suffixes.
+    owner_domains = set()
+    if owner_key in people:
+        for email in people[owner_key]["emails"]:
+            if "@" in email:
+                owner_domains.add(email.split("@", 1)[1].lower())
+    for person in people.values():
+        if person["is_owner"]:
+            person["side"] = "internal"
+            continue
+        if any(
+            "@" in email and email.split("@", 1)[1].lower() in owner_domains
+            for email in person["emails"]
+        ):
+            person["side"] = "internal"
+            continue
+        if person["name"].lower().endswith(("-csm", "-se")):
+            person["side"] = "internal"
+    return sorted(people.values(), key=lambda p: p["name"].lower())
+
+
+def _stakeholder_relationships(results: dict) -> list[dict]:
+    """Pairs of people who appear together in the gathered records:
+    the same Gong call, or the same Gmail thread. Only co-appearance
+    the records show; nothing is inferred from a shared account
+    alone."""
+    pairs: dict[tuple[str, str], dict] = {}
+
+    def note(first: str, second: str, kind: str) -> None:
+        a, b = sorted((_person_key(first), _person_key(second)))
+        if not a or not b or a == b:
+            return
+        pair = pairs.setdefault((a, b), {"calls": 0, "threads": 0})
+        pair[kind] += 1
+
+    calls = results.get("gong_list_calls") or {}
+    for call in calls.get("calls", []) or []:
+        participants = call.get("participants", []) or []
+        for i in range(len(participants)):
+            for j in range(i + 1, len(participants)):
+                note(participants[i], participants[j], "calls")
+    gmail = results.get("gmail_search_messages") or {}
+    threads: dict[str, set] = {}
+    for match in gmail.get("matches", []) or []:
+        author = str(match.get("author") or "").strip()
+        if not author:
+            continue
+        threads.setdefault(str(match.get("thread_id") or ""), set()).add(author)
+    for authors in threads.values():
+        ordered = sorted(authors)
+        for i in range(len(ordered)):
+            for j in range(i + 1, len(ordered)):
+                note(ordered[i], ordered[j], "threads")
+    return [
+        {"a": a, "b": b, "calls": pair["calls"], "threads": pair["threads"]}
+        for (a, b), pair in sorted(pairs.items())
+    ]
+
+
+def _is_budget_holder(person: dict) -> bool:
+    """True when the person controls budget: the role says so, or
+    the recorded title does. A CFO who is also an active champion
+    is a champion in the map, but the buyer gap must still see her
+    as the budget holder."""
+    if _stakeholder_role(person) == "economic buyer":
+        return True
+    title = (person.get("title") or "").lower()
+    return any(word in title for word in _BUDGET_TITLE_WORDS)
+
+
+def _stakeholder_gaps(
+    people: list[dict], relationships: list[dict]
+) -> list[str]:
+    """Coverage gaps from the map's own evidence: no economic buyer,
+    a departed champion with no successor named, a stakeholder known
+    only by a display name or handle, and no visible relationship
+    between two customer stakeholders. A gap the evidence does not
+    support is not listed."""
+    gaps: list[str] = []
+    customers = [p for p in people if p["side"] == "customer"]
+    if not any(_is_budget_holder(p) for p in customers):
+        gaps.append(
+            "No economic buyer identified in the gathered records; "
+            "nobody in the map controls budget."
+        )
+    for person in customers:
+        if person["champion_status"] != "moved":
+            continue
+        moved = person.get("moved_to") or {}
+        gaps.append(
+            "%s (%s, former champion) left the account%s; no successor "
+            "is named in any record."
+            % (
+                person["name"],
+                person["title"] or "unknown title",
+                " on %s" % moved["changed_at"]
+                if moved.get("changed_at")
+                else "",
+            )
+        )
+    label_only = [
+        p
+        for p in customers
+        if p["handle_only"] or _is_generic_label(p["name"])
+    ]
+    if label_only:
+        gaps.append(
+            "%s known only by a display name or handle; real names and "
+            "roles are unknown."
+            % (
+                " and ".join(sorted(p["name"] for p in label_only))
+                if len(label_only) > 1
+                else label_only[0]["name"] + " is"
+            )
+        )
+    by_key = {p["key"]: p for p in people}
+    customer_pairs = [
+        r
+        for r in relationships
+        if by_key.get(r["a"], {}).get("side") == "customer"
+        and by_key.get(r["b"], {}).get("side") == "customer"
+    ]
+    if customers and not customer_pairs:
+        gaps.append(
+            "No two customer stakeholders appear together in any call "
+            "or thread in the gathered records; how they connect to "
+            "each other is unknown."
+        )
+    if not customers:
+        gaps.append(
+            "No customer stakeholders found in the gathered records; "
+            "the whole map is a gap."
+        )
+    return gaps
+
+
+def _stakeholder_map_block(
+    people: list[dict], relationships: list[dict], gaps: list[str]
+) -> str:
+    """The harness-computed stakeholder map appended to the draft:
+    each person with role and influence and the evidence behind both,
+    the relationships the records show, and the coverage gaps. No
+    people means the map is empty and the gaps say so, never an
+    invented stakeholder."""
+    if not people:
+        return (
+            "Stakeholder map (harness-computed): No stakeholders found "
+            "in the gathered records for this account. No people, no "
+            "roles, no influence to score. Coverage gaps: the whole map "
+            "is a gap: no champion, no economic buyer, no end user "
+            "identified."
+        )
+    lines = ["Stakeholder map (harness-computed):", ""]
+    customers = [p for p in people if p["side"] == "customer"]
+    internal = [p for p in people if p["side"] == "internal"]
+    by_key = {p["key"]: p for p in people}
+    lines.append("Customer stakeholders:")
+    for person in customers:
+        role = _stakeholder_role(person)
+        influence = _stakeholder_influence(person)
+        detail = "- %s: %s" % (person["name"], role)
+        if person["title"] and role in (
+            "champion",
+            "former champion",
+            "economic buyer",
+        ):
+            detail += " (%s)" % person["title"]
+        detail += ", influence %s." % influence
+        moved = person.get("moved_to") or {}
+        if moved.get("company"):
+            detail += " Left the account %s, now %s at %s." % (
+                moved.get("changed_at") or "date unknown",
+                moved.get("role") or "unknown role",
+                moved["company"],
+            )
+        promoted = person.get("promoted") or {}
+        if promoted.get("to"):
+            detail += " Promoted %s -> %s." % (
+                promoted.get("from") or "unknown role",
+                promoted["to"],
+            )
+        detail += " Evidence: %s." % "; ".join(person["evidence"])
+        lines.append(detail)
+    if internal:
+        lines.append("")
+        lines.append("Our side:")
+        for person in internal:
+            role = _stakeholder_role(person)
+            detail = "- %s: %s (internal)." % (person["name"], role)
+            detail += " Evidence: %s." % "; ".join(person["evidence"])
+            lines.append(detail)
+    lines.append("")
+    lines.append("Relationships:")
+    shown = [
+        r
+        for r in relationships
+        if not (
+            by_key.get(r["a"], {}).get("side") == "internal"
+            and by_key.get(r["b"], {}).get("side") == "internal"
+        )
+    ]
+    if not shown:
+        lines.append(
+            "- No two people appear together in any call or thread in "
+            "the gathered records."
+        )
+    for rel in shown:
+        a = by_key.get(rel["a"], {}).get("name", rel["a"])
+        b = by_key.get(rel["b"], {}).get("name", rel["b"])
+        parts = []
+        if rel["calls"]:
+            parts.append(
+                "%d call%s" % (rel["calls"], "s" if rel["calls"] != 1 else "")
+            )
+        if rel["threads"]:
+            parts.append(
+                "%d email thread%s"
+                % (rel["threads"], "s" if rel["threads"] != 1 else "")
+            )
+        lines.append("- %s and %s: together on %s." % (a, b, " and in ".join(parts)))
+    lines.append("")
+    lines.append("Coverage gaps:")
+    for gap in gaps:
+        lines.append("- %s" % gap)
+    return "\n".join(lines)
+
+
+class StakeholderMapperAgent(Agent):
+    """Builds the relationship map for an account.
+
+    Gathers: account summary, champion list and job changes, recent
+    email threads, Gong calls and transcripts, Zoom recordings and
+    transcripts, and recent Slack signals. Drafts: a stakeholder map
+    with each person, their role and influence, how they connect, and
+    the coverage gaps.
+
+    Composition (v1.1.0): when prior drafts from advocate-finder,
+    risk-watcher, and voice-of-customer exist for the account, the map
+    is built from those drafts instead of re-gathering the same
+    context; only the fresh person signals (account record, champion
+    list and job changes, Gmail, Gong calls, Zoom recordings, Slack)
+    are gathered directly, and the transcripts are left to the source
+    drafts. When no prior drafts exist, the agent gathers directly,
+    its previous behavior.
+
+    Roles and influence are harness-computed, never model prose: a
+    champion record makes a champion, a budget title makes an
+    economic buyer, anything else is unknown; influence is scored on
+    observable signals (active champion, senior title, presence
+    across sources) and unknown where there is nothing to score. A
+    person, role, or relationship the records do not support never
+    appears. With no people at all the map is empty, stated as such.
+    """
+
+    name = "stakeholder-mapper"
+    display_name = "Stakeholder Mapper"
+    description = (
+        "Builds the relationship map: users, champions, economic "
+        "buyers, blockers, and how they connect. Records influence, "
+        "not just titles."
+    )
+    keywords = [
+        "stakeholder",
+        "stakeholders",
+        "stakeholder-mapper",
+        "stakeholder mapper",
+        "relationship map",
+        "org chart",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Lists each stakeholder with role and influence",
+            keywords=["stakeholder map"],
+        ),
+        ProofItem(
+            "Names the coverage gaps",
+            keywords=["coverage gaps"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _STAKEHOLDER_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the fresh
+            # person signals are gathered directly; the source drafts
+            # carry the transcripts and the broader account context,
+            # and their deep links carry through to the composed draft.
+            # The draft carries a harness-written provenance line
+            # naming the agents it was composed from.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("champify_list_champions", {"account": account}),
+                ("champify_list_job_changes", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_list_calls", {"account": account, "days": 30}),
+                ("zoom_list_recordings", {"account": account, "days": 30}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            # Fallback: no prior drafts for this account, gather directly.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("champify_list_champions", {"account": account}),
+                ("champify_list_job_changes", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_list_calls", {"account": account, "days": 30}),
+                ("gong_search_transcripts", {"query": account, "limit": 5}),
+                ("zoom_list_recordings", {"account": account, "days": 30}),
+                ("zoom_search_transcripts", {"query": account, "limit": 5}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        people = _stakeholder_people(results)
+        relationships = _stakeholder_relationships(results)
+        gaps = _stakeholder_gaps(people, relationships)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a stakeholder map for account %r. Cover: each "
+            "person with their role and influence, how they connect to "
+            "each other, and the coverage gaps. Use only the context "
+            "below. Never invent a person, a role, or a relationship "
+            "the context does not support; say unknown where the "
+            "records do not say." % account,
+        )
+        system = (
+            "You are the stakeholder-mapper agent for a customer "
+            "success team. You map the people on an account before "
+            "anyone acts on it: who the champions are, who controls "
+            "budget, who is missing. A role the records do not support "
+            "is unknown, never guessed; a relationship nobody recorded "
+            "does not exist in the map."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + _stakeholder_map_block(people, relationships, gaps)
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -3850,7 +4540,7 @@ class EscalationManagerAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All thirteen agents, keyed by name. All implemented."""
+    """All fourteen agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -3865,6 +4555,7 @@ def build_agents() -> dict[str, Agent]:
         "risk-watcher": RiskWatcherAgent(),
         "escalation-manager": EscalationManagerAgent(),
         "competitive-defense": CompetitiveDefenseAgent(),
+        "stakeholder-mapper": StakeholderMapperAgent(),
     }
     return agents
 
