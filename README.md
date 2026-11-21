@@ -221,6 +221,40 @@ marked simulated, so a demo can never be mistaken for a real change.
 Editing a write draft's text does not change its write plan; to change
 what will execute, re-run the updater.
 
+## Scheduling
+
+A schedule names an agent, an account, and a cadence: daily or weekly,
+at a wall-clock time in a named timezone. The scheduler runs due jobs
+through the same path as a manual `run`, so a scheduled run drafts
+into the approval queue exactly like a typed one: it never writes
+back without human approval, it respects the per-job token budget and
+the memory controls, and a failed run is logged on its schedule and
+does not block the next job. A missed run fires once, not once per
+missed cadence.
+
+```bash
+# A daily briefer at 07:00 Los Angeles time.
+python -m harness.run schedules add --agent briefer --account "Acme Corp" --cadence daily --time 07:00 --timezone America/Los_Angeles
+
+# A weekly renewal check on Mondays.
+python -m harness.run schedules add --agent renewal-desk --account "Acme Corp" --cadence weekly --weekday Mon --time 08:00 --timezone America/Los_Angeles
+
+python -m harness.run schedules list
+python -m harness.run schedules remove <id>
+
+# Run due jobs once, then exit. The mode a system cron calls.
+python -m harness.run scheduler --once
+
+# Or run the daemon: it holds a lock so two cannot run at once, wakes
+# when the next job is due, and stops cleanly on Ctrl-C.
+python -m harness.run scheduler
+```
+
+Schedules live in one JSON file (`schedules.json`, `HARNESS_SCHEDULES_FILE`
+to move it), human-editable, same file-backed pattern as the approval
+queue and memory. The daemon reloads it every cycle, so edits take
+effect without a restart.
+
 ## Dashboard
 
 The dashboard is the UI the CSM operates from. It reads the live
@@ -250,7 +284,7 @@ agent candidates below.
 | composition | v1.1.0 (shipped) | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts, falling back to direct gathering when no prior drafts exist. |
 | memory | v1.2.0 (shipped) | Persistent memory across runs: past drafts, decisions, and corrections per account, injected as context next run, bounded by the token budget. Capture in the approval queue; edits store the correction itself. Local only, never crosses accounts. |
 | write-back | v1.3.0 (shipped) | The first write tools plus approval-gated execution. The Salesforce updater agent drafts field changes, activity logs, and stage moves; only an approved write draft executes, exactly once per change. |
-| scheduling | v1.4.0 | A daemon that runs the harness on its own, so watch agents actually watch. |
+| scheduling | v1.4.0 (shipped) | A daemon that runs the harness on its own, so watch agents actually watch: file-backed schedules (daily/weekly, named timezone), a run-once mode for system cron, a single-instance daemon, scheduled runs draft into the approval queue only. |
 | MCP client | v1.5.0 | A harness-side MCP client that picks up MCP servers the user already has connected. |
 
 ## Planned agents
@@ -300,7 +334,7 @@ and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v1.0.0 honesty)
 
-**Real, tested (324 unit tests, all passing):**
+**Real, tested (353 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
@@ -319,6 +353,10 @@ and shared, so the cutover is a client, not a rewrite.
 - Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, and Champify MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
+- Scheduling: file-backed schedules (daily/weekly, named timezone),
+  a run-once mode for system cron, and a single-instance daemon.
+  Scheduled runs draft into the approval queue only; a failed run is
+  logged on its schedule and never blocks the next job.
 - The dashboard (v0.8.0): local FastAPI server reading the live queue
   file. Stat strip, approval queue with completeness checks, source
   links, and working approve/reject, source status, agent last-run

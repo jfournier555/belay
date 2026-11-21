@@ -60,6 +60,10 @@ Environment variables:
                              Default: memory.json (in the working dir).
                              Memory is local only; nothing in it is ever
                              sent anywhere.
+    HARNESS_SCHEDULES_FILE   Path to the schedule JSON file (v1.4.0).
+                             Default: schedules.json (in the working
+                             dir). One object per schedule: agent,
+                             account, cadence, time, timezone.
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
     HARNESS_LOADED_HOURLY_RATE
                              Loaded hourly rate in dollars, used by
@@ -120,6 +124,7 @@ class Config:
     champify_api_base_url: str = "https://api.champify.io/v1"
     approvals_file: str = "approvals.json"
     memory_file: str = "memory.json"
+    schedules_file: str = "schedules.json"
     token_budget_per_job: int = 8000
     loaded_hourly_rate: float | None = None
 
@@ -166,6 +171,9 @@ class Config:
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
             memory_file=os.environ.get("HARNESS_MEMORY_FILE", "memory.json"),
+            schedules_file=os.environ.get(
+                "HARNESS_SCHEDULES_FILE", "schedules.json"
+            ),
             token_budget_per_job=int(
                 os.environ.get("HARNESS_TOKEN_BUDGET", "8000")
             ),

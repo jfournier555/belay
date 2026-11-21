@@ -16,6 +16,11 @@ Usage:
     python -m harness.run memory show "Acme Corp"
     python -m harness.run memory clear "Acme Corp"
     python -m harness.run memory accounts
+    python -m harness.run schedules list
+    python -m harness.run schedules add --agent briefer --account "Acme Corp" --cadence daily --time 07:00 --timezone America/Los_Angeles
+    python -m harness.run schedules remove <id>
+    python -m harness.run scheduler --once
+    python -m harness.run scheduler
     python -m harness.run dashboard [--port 8000]
 
 The `run` command routes the job, runs the agent, and submits the draft to
@@ -32,6 +37,12 @@ crosses accounts.
 
 --stub forces stub mode for all connectors and the LLM, so the full loop
 runs with no credentials and no network calls.
+
+Scheduled runs (`scheduler --once`, or the `scheduler` daemon) use the
+same execution path as a manual `run`: they draft into the approval
+queue only, never execute a write, and respect the same token budget
+and memory controls. A failed scheduled run is logged on its schedule
+and does not block the next job.
 """
 
 from __future__ import annotations
@@ -39,6 +50,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import threading
+from dataclasses import replace
 
 from connectors.champify.tools import champify_tools
 from connectors.gmail.tools import gmail_tools
@@ -60,6 +73,14 @@ from harness import (
     ToolRegistry,
     __version__,
     get_llm,
+)
+from harness.scheduler import (
+    ScheduleStore,
+    SchedulerAlreadyRunning,
+    install_stop_handlers,
+    run_daemon,
+    run_due,
+    scheduler_lock,
 )
 from harness.writeback import (
     execute_writes,
@@ -111,11 +132,19 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return dashboard_main(["--port", str(args.port)])
 
 
-def cmd_run(args: argparse.Namespace) -> int:
-    """Route a job, run the agent, submit the draft to the queue."""
-    config = Config.from_env()
-    if args.stub:
-        config.stub_mode = True
+def execute_job(config: Config, job: dict):
+    """Route a job, run the agent, submit the draft to the queue.
+
+    The one execution path for a manual `run` and for scheduled runs:
+    both draft into the approval queue only, nothing executes here.
+    Returns (item, draft, agent, route). Raises ValueError when routing
+    fails and NotImplementedError when the agent is not implemented.
+    `job` must name the agent (or free text the router can route) and
+    the account; memory_file and approvals_file default from the config
+    when the job does not carry them. For salesforce-updater, the job's
+    `changes` must already be parsed change specs (cmd_run and the
+    scheduler parse them before calling here, so a bad spec fails
+    before the agent runs)."""
     registry = build_registry(config)
     llm = get_llm(config)
     router = Router(
@@ -123,64 +152,30 @@ def cmd_run(args: argparse.Namespace) -> int:
         llm=llm if config.llm_configured() else None,
         router_model=config.effective_router_model,
     )
-    job: dict = {"text": args.text or ""}
-    if args.agent:
-        job["agent"] = args.agent
-    if args.account:
-        job["account"] = args.account
-        if not job["text"]:
-            job["text"] = args.account
-
     route = router.route(job)
     if route.error:
-        print("Routing failed: %s" % route.error, file=sys.stderr)
-        return 1
+        raise ValueError(route.error)
     agent = AGENTS[route.agent]
-    print("Routed to %s (%s, %s)." % (agent.display_name, route.agent, route.reason))
     # Memory travels with the job: the memory file for injection, and
     # the opt-out flag. Every agent loads the account's memory from
     # it (bounded by the budget); --no-memory runs cold.
-    job["memory_file"] = config.memory_file
-    if args.no_memory:
-        job["no_memory"] = True
+    job.setdefault("memory_file", config.memory_file)
     if route.agent in ("value-finder", "qbr-builder", "salesforce-updater"):
         # Value-finder and qbr-builder read prior drafts from the
         # approval queue (value-finder synthesizes them, qbr-builder
         # composes from them); salesforce-updater reads them for
         # context on what needs updating. The queue path travels with
         # the job.
-        job["approvals_file"] = config.approvals_file
-    if route.agent == "salesforce-updater":
-        # The updater drafts only the changes the job names (--change,
-        # repeatable). A bad spec fails fast here, before the agent
-        # runs, so a typo never becomes a draft.
-        specs = []
-        for raw in args.change or []:
-            try:
-                specs.append(parse_change_spec(raw))
-            except ValueError as exc:
-                print("Bad --change spec %r: %s" % (raw, exc), file=sys.stderr)
-                return 2
-        job["changes"] = specs
+        job.setdefault("approvals_file", config.approvals_file)
     if route.agent == "value-finder":
         # Value-finder quantifies time saved from explicit inputs only:
-        # the loaded hourly rate comes from --hourly-rate or
-        # HARNESS_LOADED_HOURLY_RATE, the hours from --hours-saved.
-        # Neither is ever assumed.
-        if args.hourly_rate is not None:
-            job["hourly_rate"] = args.hourly_rate
-            job["hourly_rate_source"] = "CLI --hourly-rate"
-        elif config.loaded_hourly_rate is not None:
+        # the loaded hourly rate comes from the job, or from
+        # HARNESS_LOADED_HOURLY_RATE. It is never assumed.
+        if "hourly_rate" not in job and config.loaded_hourly_rate is not None:
             job["hourly_rate"] = config.loaded_hourly_rate
             job["hourly_rate_source"] = "HARNESS_LOADED_HOURLY_RATE"
-        if args.hours_saved is not None:
-            job["hours_saved"] = args.hours_saved
     budget = TokenBudget(config.token_budget_per_job)
-    try:
-        draft = agent.run(job, registry, llm, budget)
-    except NotImplementedError as exc:
-        print("Agent error: %s" % exc, file=sys.stderr)
-        return 1
+    draft = agent.run(job, registry, llm, budget)
     queue = ApprovalQueue(config.approvals_file)
     item = queue.submit(
         agent=agent.name,
@@ -191,6 +186,50 @@ def cmd_run(args: argparse.Namespace) -> int:
         proof=draft.proof,
         writes=draft.writes,
     )
+    return item, draft, agent, route
+
+
+def cmd_run(args: argparse.Namespace) -> int:
+    """Route a job, run the agent, submit the draft to the queue."""
+    config = Config.from_env()
+    if args.stub:
+        config.stub_mode = True
+    job: dict = {"text": args.text or ""}
+    if args.agent:
+        job["agent"] = args.agent
+    if args.account:
+        job["account"] = args.account
+        if not job["text"]:
+            job["text"] = args.account
+    if args.no_memory:
+        job["no_memory"] = True
+    if args.change:
+        # The updater drafts only the changes the job names (--change,
+        # repeatable). A bad spec fails fast here, before the agent
+        # runs, so a typo never becomes a draft. Other agents ignore
+        # the key; the updater reads it when the job routes there.
+        specs = []
+        for raw in args.change:
+            try:
+                specs.append(parse_change_spec(raw))
+            except ValueError as exc:
+                print("Bad --change spec %r: %s" % (raw, exc), file=sys.stderr)
+                return 2
+        job["changes"] = specs
+    if args.hourly_rate is not None:
+        job["hourly_rate"] = args.hourly_rate
+        job["hourly_rate_source"] = "CLI --hourly-rate"
+    if args.hours_saved is not None:
+        job["hours_saved"] = args.hours_saved
+    try:
+        item, draft, agent, route = execute_job(config, job)
+    except ValueError as exc:
+        print("Routing failed: %s" % exc, file=sys.stderr)
+        return 1
+    except NotImplementedError as exc:
+        print("Agent error: %s" % exc, file=sys.stderr)
+        return 1
+    print("Routed to %s (%s, %s)." % (agent.display_name, route.agent, route.reason))
     print("Draft submitted to the approval queue: %s" % item.id)
     print("Sources: %s" % (", ".join(draft.sources) or "none"))
     if draft.links:
@@ -381,6 +420,148 @@ def cmd_memory(args: argparse.Namespace) -> int:
     return 1
 
 
+def job_from_schedule(schedule, config: Config) -> dict:
+    """Build the job dict for one scheduled run. Same fields a manual
+    `run` builds. A bad --change spec raises ValueError: the run is
+    logged as failed, never fatal to the scheduler."""
+    job: dict = {
+        "agent": schedule.agent,
+        "account": schedule.account,
+        "text": schedule.text or schedule.account,
+    }
+    if schedule.no_memory:
+        job["no_memory"] = True
+    if schedule.agent == "salesforce-updater":
+        job["changes"] = [parse_change_spec(raw) for raw in schedule.changes]
+    if schedule.agent == "value-finder":
+        if schedule.hourly_rate is not None:
+            job["hourly_rate"] = schedule.hourly_rate
+            job["hourly_rate_source"] = "schedule"
+        if schedule.hours_saved is not None:
+            job["hours_saved"] = schedule.hours_saved
+    return job
+
+
+def _scheduled_executor(schedule, config: Config) -> str:
+    """Run one scheduled job through the same path as a manual `run`
+    and return the queued draft's id. Drafts only: nothing here
+    executes a write, and the approval gate still applies."""
+    run_config = replace(config, stub_mode=True) if schedule.stub else config
+    job = job_from_schedule(schedule, run_config)
+    item, _draft, _agent, _route = execute_job(run_config, job)
+    return item.id
+
+
+def cmd_schedules(args: argparse.Namespace) -> int:
+    """List, add, or remove scheduled jobs."""
+    config = Config.from_env()
+    store = ScheduleStore(config.schedules_file)
+    if args.action == "list":
+        schedules = store.list()
+        if not schedules:
+            print(
+                "No schedules. Add one with: python -m harness.run "
+                "schedules add --agent briefer --account \"Acme Corp\" "
+                "--cadence daily --time 07:00 --timezone America/Los_Angeles"
+            )
+            return 0
+        for schedule in schedules:
+            print(schedule.describe())
+        return 0
+    if args.action == "add":
+        data = {
+            "agent": args.agent,
+            "account": args.account,
+            "cadence": args.cadence,
+            "time": args.time,
+            "timezone": args.timezone,
+            "weekday": args.weekday,
+            "text": args.text,
+            "hourly_rate": args.hourly_rate,
+            "hours_saved": args.hours_saved,
+            "changes": list(args.change or []),
+            "no_memory": args.no_memory,
+            "stub": args.stub,
+        }
+        try:
+            schedule = store.add(data, valid_agents=set(AGENTS))
+        except ValueError as exc:
+            print("Bad schedule: %s" % exc, file=sys.stderr)
+            return 2
+        print("Scheduled: %s" % schedule.describe())
+        return 0
+    if args.action == "remove":
+        if store.remove(args.schedule_id):
+            print("Removed schedule %s." % args.schedule_id)
+            return 0
+        print("Unknown schedule: %s" % args.schedule_id, file=sys.stderr)
+        return 1
+    print("Unknown schedules action: %s" % args.action, file=sys.stderr)
+    return 1
+
+
+def cmd_scheduler(args: argparse.Namespace) -> int:
+    """Run due scheduled jobs: once, or as a daemon.
+
+    --once runs every due job now and exits: 0 when every due job
+    ran, 1 when any due job failed, 2 when another scheduler already
+    holds the lock. The daemon holds the lock for its whole run and
+    stops cleanly on Ctrl-C (SIGINT/SIGTERM)."""
+    config = Config.from_env()
+    store = ScheduleStore(config.schedules_file)
+    if args.once:
+        try:
+            with scheduler_lock(store.path + ".lock"):
+                results = run_due(store, config, _scheduled_executor)
+        except SchedulerAlreadyRunning as exc:
+            print("Scheduler: %s" % exc, file=sys.stderr)
+            return 2
+        failed = 0
+        for result in results:
+            if result.status == "ok":
+                print(
+                    "Ran %s for %s (%s): draft %s"
+                    % (
+                        result.agent,
+                        result.account,
+                        result.schedule_id,
+                        result.item_id,
+                    )
+                )
+            elif result.status == "failed":
+                print(
+                    "FAILED %s for %s (%s): %s"
+                    % (
+                        result.agent,
+                        result.account,
+                        result.schedule_id,
+                        result.error,
+                    ),
+                    file=sys.stderr,
+                )
+                failed += 1
+            else:
+                print(
+                    "Skipped %s for %s (%s): %s"
+                    % (
+                        result.agent,
+                        result.account,
+                        result.schedule_id,
+                        result.reason,
+                    )
+                )
+        return 1 if failed else 0
+    stop = threading.Event()
+    install_stop_handlers(stop)
+    print(
+        "Scheduler running (schedules file: %s). Ctrl-C to stop."
+        % config.schedules_file
+    )
+    return run_daemon(
+        store, config, _scheduled_executor, interval=args.interval, stop=stop
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cs-harness",
@@ -423,6 +604,28 @@ def build_parser() -> argparse.ArgumentParser:
     mem_p.add_argument("account", nargs="?", help="Account name, for show and clear.")
     mem_p.set_defaults(func=cmd_memory)
 
+    sched_p = sub.add_parser("schedules", help="List, add, or remove scheduled jobs.")
+    sched_p.add_argument("action", choices=["list", "add", "remove"])
+    sched_p.add_argument("schedule_id", nargs="?", help="Schedule id, for remove.")
+    sched_p.add_argument("--agent", help="Agent name, e.g. briefer, renewal-desk.")
+    sched_p.add_argument("--account", help="Account name or id.")
+    sched_p.add_argument("--cadence", choices=["daily", "weekly"], help="How often to run.")
+    sched_p.add_argument("--time", help="Wall-clock time HH:MM in the schedule timezone.")
+    sched_p.add_argument("--timezone", default="UTC", help="IANA timezone, e.g. America/Los_Angeles. Default: UTC.")
+    sched_p.add_argument("--weekday", help="Day name or 0-6 (Mon-Sun), for weekly schedules.")
+    sched_p.add_argument("--text", help="Free-text job description (defaults to the account).")
+    sched_p.add_argument("--hourly-rate", type=float, default=None, help="Loaded hourly rate in dollars, for value-finder.")
+    sched_p.add_argument("--hours-saved", type=float, default=None, help="Hours saved by automation, for value-finder.")
+    sched_p.add_argument("--change", action="append", default=None, help="Change for salesforce-updater, repeatable. Same forms as run --change.")
+    sched_p.add_argument("--no-memory", action="store_true", help="Run cold: do not load the account's memory as context.")
+    sched_p.add_argument("--stub", action="store_true", help="Run scheduled jobs in stub mode.")
+    sched_p.set_defaults(func=cmd_schedules)
+
+    daemon_p = sub.add_parser("scheduler", help="Run due scheduled jobs: once, or as a daemon.")
+    daemon_p.add_argument("--once", action="store_true", help="Run due jobs once, then exit.")
+    daemon_p.add_argument("--interval", type=int, default=60, help="Max seconds between daemon wake-ups. Default: 60.")
+    daemon_p.set_defaults(func=cmd_scheduler)
+
     dash_p = sub.add_parser("dashboard", help="Serve the dashboard on localhost.")
     dash_p.add_argument("--port", type=int, default=8000)
     dash_p.set_defaults(func=cmd_dashboard)
@@ -436,6 +639,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("approvals %s needs an item id." % args.action)
     if args.command == "memory" and args.action in ("show", "clear") and not args.account:
         parser.error("memory %s needs an account." % args.action)
+    if args.command == "schedules" and args.action == "add" and not (
+        args.agent and args.account and args.cadence and args.time
+    ):
+        parser.error("schedules add needs --agent, --account, --cadence, and --time.")
+    if args.command == "schedules" and args.action == "remove" and not args.schedule_id:
+        parser.error("schedules remove needs a schedule id.")
     return args.func(args)
 
 
