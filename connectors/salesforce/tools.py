@@ -37,6 +37,7 @@ _STUB_ACCOUNT = {
     "_stub": True,
     "name": "Acme Corp",
     "id": "001STUB000000001",
+    "instance_url": "https://stub.salesforce.invalid",
     "arr": 120000,
     "currency": "USD",
     "renewal_date": "2027-02-15",
@@ -51,9 +52,11 @@ _STUB_ACCOUNT = {
 _STUB_OPPORTUNITIES = {
     "_stub": True,
     "account": "Acme Corp",
+    "instance_url": "https://stub.salesforce.invalid",
     "opportunities": [
         {
             "name": "Acme Corp - Renewal FY27",
+            "id": "006STUB000000001",
             "stage": "Negotiation",
             "amount": 120000,
             "close_date": "2027-02-15",
@@ -61,6 +64,7 @@ _STUB_OPPORTUNITIES = {
         },
         {
             "name": "Acme Corp - Expansion (50 seats)",
+            "id": "006STUB000000002",
             "stage": "Qualification",
             "amount": 45000,
             "close_date": "2027-04-01",
@@ -72,9 +76,11 @@ _STUB_OPPORTUNITIES = {
 _STUB_CASES = {
     "_stub": True,
     "account": "Acme Corp",
+    "instance_url": "https://stub.salesforce.invalid",
     "cases": [
         {
             "number": "00001234",
+            "id": "500STUB000000001",
             "subject": "SSO login fails for new hires",
             "status": "Working",
             "priority": "High",
@@ -82,6 +88,7 @@ _STUB_CASES = {
         },
         {
             "number": "00001241",
+            "id": "500STUB000000002",
             "subject": "Export timeout on large reports",
             "status": "New",
             "priority": "Medium",
@@ -124,6 +131,7 @@ def get_account(config: Config, account: str) -> dict:
     return {
         "name": rec.get("Name"),
         "id": rec.get("Id"),
+        "instance_url": config.salesforce_instance_url,
         "arr": rec.get("AnnualRevenue"),
         "industry": rec.get("Industry"),
         "employees": rec.get("NumberOfEmployees"),
@@ -145,6 +153,7 @@ def list_opportunities(config: Config, account: str) -> dict:
     opps = [
         {
             "name": r.get("Name"),
+            "id": r.get("Id"),
             "stage": r.get("StageName"),
             "amount": r.get("Amount"),
             "close_date": r.get("CloseDate"),
@@ -152,7 +161,11 @@ def list_opportunities(config: Config, account: str) -> dict:
         }
         for r in data.get("records", [])
     ]
-    return {"account": account, "opportunities": opps}
+    return {
+        "account": account,
+        "instance_url": config.salesforce_instance_url,
+        "opportunities": opps,
+    }
 
 
 def list_cases(config: Config, account: str) -> dict:
@@ -162,7 +175,8 @@ def list_cases(config: Config, account: str) -> dict:
         result["requested"] = account
         return result
     soql = (
-        "SELECT CaseNumber, Subject, Status, Priority, CreatedDate FROM Case "
+        "SELECT Id, CaseNumber, Subject, Status, Priority, CreatedDate "
+        "FROM Case "
         "WHERE Account.Name LIKE '%{0}%' AND IsClosed = false "
         "ORDER BY CreatedDate DESC".format(account.replace("'", "\\'"))
     )
@@ -170,6 +184,7 @@ def list_cases(config: Config, account: str) -> dict:
     cases = [
         {
             "number": r.get("CaseNumber"),
+            "id": r.get("Id"),
             "subject": r.get("Subject"),
             "status": r.get("Status"),
             "priority": r.get("Priority"),
@@ -177,7 +192,11 @@ def list_cases(config: Config, account: str) -> dict:
         }
         for r in data.get("records", [])
     ]
-    return {"account": account, "cases": cases}
+    return {
+        "account": account,
+        "instance_url": config.salesforce_instance_url,
+        "cases": cases,
+    }
 
 
 def salesforce_tools(config: Config) -> list[Tool]:

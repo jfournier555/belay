@@ -90,6 +90,8 @@
   .proof .pass { color: var(--green); }
   .proof .fail { color: var(--red); }
   .proof ul { margin: 4px 0 0 18px; padding: 0; color: var(--muted); }
+  .links-line { color: var(--muted); font-size: 12px; margin-top: 4px; }
+  .links-line a { color: var(--blue); }
   .draft {
     background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
     padding: 10px 12px; white-space: pre-wrap; font-size: 13px;
@@ -213,10 +215,17 @@ function render(state) {
         (p.passed ? "PASS" : "FAIL") + '</span> ' + esc(p.label) +
         (p.passed ? "" : " (" + esc(p.detail || "") + ")") + '</li>'
       ).join("");
-      const proof = item.proof_total
-        ? '<div class="proof">Proof checklist: <b>' + item.proof_passed + '/' + item.proof_total + ' passed</b>' +
-          (proofItems ? '<ul>' + proofItems + '</ul>' : '') + '</div>'
-        : '<div class="proof">Proof checklist: none recorded for this draft.</div>';
+      const proof = item.proof.length
+        ? '<div class="proof">Completeness check:' +
+          '<ul>' + proofItems + '</ul></div>'
+        : '<div class="proof">Completeness check: none recorded for this draft.</div>';
+      const links = (item.links || []).map(l =>
+        '<a href="' + esc(l.url) + '" target="_blank" rel="noopener">' +
+        esc(l.label) + '</a>'
+      ).join(" · ");
+      const linksLine = links
+        ? '<div class="links-line">Source links: ' + links + '</div>'
+        : "";
       const actions = item.status === "pending"
         ? '<div class="actions">' +
           '<button class="approve" data-id="' + esc(item.id) + '" data-action="approve">Approve</button>' +
@@ -231,6 +240,7 @@ function render(state) {
         proof +
         '<div class="draft">' + esc(item.draft) + '</div>' +
         '<div class="sources-line">Sources: ' + esc(item.sources.join(", ") || "none") + '</div>' +
+        linksLine +
         actions + '</div>';
     }).join("");
     q.querySelectorAll("button[data-action]").forEach(btn => {

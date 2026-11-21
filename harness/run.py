@@ -95,13 +95,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         job=job,
         draft=draft.text,
         sources=draft.sources,
+        links=draft.links,
         proof=draft.proof,
     )
     print("Draft submitted to the approval queue: %s" % item.id)
     print("Sources: %s" % (", ".join(draft.sources) or "none"))
+    if draft.links:
+        print("Source links:")
+        for link in draft.links:
+            print("  %s: %s" % (link["label"], link["url"]))
     if draft.proof:
-        passed = sum(1 for p in draft.proof if p.get("passed"))
-        print("Proof checklist: %d/%d passed" % (passed, len(draft.proof)))
         for p in draft.proof:
             if not p.get("passed"):
                 print("  FAIL: %s (%s)" % (p.get("label"), p.get("detail")))
@@ -160,9 +163,12 @@ def cmd_approvals(args: argparse.Namespace) -> int:
         if item.note:
             print("Note: %s" % item.note)
         print("Sources: %s" % (", ".join(item.sources) or "none"))
+        if item.links:
+            print("Source links:")
+            for link in item.links:
+                print("  %s: %s" % (link["label"], link["url"]))
         if item.proof:
-            passed = sum(1 for p in item.proof if p.get("passed"))
-            print("Proof checklist: %d/%d passed" % (passed, len(item.proof)))
+            print("Completeness check:")
             for p in item.proof:
                 mark = "PASS" if p.get("passed") else "FAIL"
                 print("  %s: %s (%s)" % (mark, p.get("label"), p.get("detail")))

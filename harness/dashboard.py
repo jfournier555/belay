@@ -213,8 +213,6 @@ def queue_view(queue: ApprovalQueue) -> list[dict]:
     )
     view = []
     for item in ordered:
-        proof = item.proof or []
-        passed = sum(1 for p in proof if p.get("passed"))
         view.append(
             {
                 "id": item.id,
@@ -223,9 +221,8 @@ def queue_view(queue: ApprovalQueue) -> list[dict]:
                 "job": item.job,
                 "draft": item.draft,
                 "sources": item.sources,
-                "proof": proof,
-                "proof_passed": passed,
-                "proof_total": len(proof),
+                "links": item.links or [],
+                "proof": item.proof or [],
                 "status": item.status,
                 "created_at": item.created_at,
                 "decided_at": item.decided_at,

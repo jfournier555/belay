@@ -109,7 +109,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("60 days", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 4)
+        self.assertEqual(len(draft.proof), 5)
 
     def test_voice_of_customer_runs_and_cites_sources(self):
         agent = AGENTS["voice-of-customer"]
@@ -134,7 +134,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("sentiment", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 5)
+        self.assertEqual(len(draft.proof), 6)
 
     def test_voc_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)
@@ -167,7 +167,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("influence", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 5)
+        self.assertEqual(len(draft.proof), 6)
 
     def test_advocate_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)
@@ -195,7 +195,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("next quarter", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 4)
+        self.assertEqual(len(draft.proof), 5)
 
     def test_qbr_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)
@@ -222,7 +222,7 @@ class TestAgents(unittest.TestCase):
         self.assertIn("hiring", draft.text)
         # The proof checklist passes end to end in stub mode.
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 4)
+        self.assertEqual(len(draft.proof), 5)
 
     def test_scout_keyword_routes(self):
         router = Router(agents=AGENTS, llm=None)
@@ -230,7 +230,7 @@ class TestAgents(unittest.TestCase):
         self.assertEqual(route.agent, "scout")
 
     def test_scout_proof_flags_missing_sources_when_budget_skips_tools(self):
-        # Stub tool costs: account 58, opportunities 83, cases 77,
+        # Stub tool costs: account 58, opportunities 96, cases 90,
         # slack 153. A budget of 100 lets only the account call through,
         # so the scout proof fails exactly the one source item.
         agent = AGENTS["scout"]
@@ -377,11 +377,11 @@ class TestProofChecklist(unittest.TestCase):
             self.budget,
         )
         self.assertTrue(draft.proof_passed)
-        self.assertEqual(len(draft.proof), 4)
+        self.assertEqual(len(draft.proof), 5)
         self.assertTrue(all(p["passed"] for p in draft.proof))
 
     def test_proof_flags_missing_sources_when_budget_skips_tools(self):
-        # Stub tool costs: account 58, opportunities 83, cases 77,
+        # Stub tool costs: account 58, opportunities 96, cases 90,
         # slack 153. A budget of 100 lets only the account call through,
         # so the renewal desk proof fails exactly the two source items.
         agent = AGENTS["renewal-desk"]
@@ -430,7 +430,7 @@ class TestProofChecklist(unittest.TestCase):
             # the reviewer sees it when they open the item.
             reloaded = ApprovalQueue(tmp.name).get(item.id)
             self.assertIsNotNone(reloaded)
-            self.assertEqual(len(reloaded.proof), 4)
+            self.assertEqual(len(reloaded.proof), 5)
             self.assertFalse(
                 all(p["passed"] for p in reloaded.proof)
             )

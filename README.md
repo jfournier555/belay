@@ -39,14 +39,23 @@ Three rules, enforced in code:
 ## Proof checklist
 
 Each agent self-checks its draft against a proof checklist before it
-reaches the queue. Every agent defines what "done" looks like as a short
-checklist: the evidence its draft must contain, as required sources
-gathered and key points covered. After drafting, the agent self-checks
-its own output against the checklist before the draft reaches the
-approval queue. The results ride along in the draft metadata and show
-up in `approvals show`, so the human reviewer sees them. A failed item
-is a flag, never a block: the draft still goes to the queue either way,
-and human approval remains the final gate.
+reaches the queue, and every draft carries clickable deep links to the
+records it cites, so the reviewer checks the source, not a score. The
+checklist is a completeness gate, not a grade: each item is a fact the
+draft must contain or a source it must have gathered, and one item
+checks the draft carries source links at all. A failed item is a flag,
+never a block: the draft still goes to the queue either way, and human
+approval remains the final gate. No aggregate score is shown anywhere:
+a score would let the reviewer trust the number instead of opening the
+record.
+
+The links are built by the harness, never by the model: the Salesforce
+tools return record ids and the instance URL, the Slack tool carries
+each message's permalink, and the harness turns those into Lightning
+record links and Slack permalinks. The model is never shown a URL and
+is told never to write one, so a link can never be hallucinated. In
+stub mode the links point at clearly fake hosts (`.invalid`), so a
+demo link can never be mistaken for a real record.
 
 ## Quick start
 
@@ -109,7 +118,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 The dashboard is the UI the CSM operates from. It reads the live
 approval queue file and shows the numbers from real harness state:
 accounts watched, at-risk drafts, drafts ready, advocates found, the
-approval queue with each draft's proof checklist score, source status,
+approval queue with each draft's completeness check and source links, source status,
 agent last-run state, the event log, and the token budget. When the
 queue is empty it says so; no number is ever invented. Everything is a
 draft until I say send.
@@ -129,7 +138,7 @@ agent candidates below.
 
 | Piece | Target | What it will do |
 |---|---|---|
-| dashboard | v0.8.0 (shipped) | Local web UI over the live approval queue: stat strip, queue with proof scores and approve/reject, sources, agents, event log, token budget. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision. |
+| dashboard | v0.8.0 (shipped) | Local web UI over the live approval queue: stat strip, queue with completeness checks, source links, and approve/reject, sources, agents, event log, token budget. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision. |
 | composition | v1.1.0 | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts. |
 | memory | v1.2.0 | Persistent memory across runs: past drafts, decisions, and corrections per account. |
 | write-back | v1.3.0 | The first write tools plus approval-gated execution. The Salesforce updater agent is the first use. |
@@ -171,7 +180,7 @@ and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v0.8 honesty)
 
-**Real, tested (76 unit tests, all passing):**
+**Real, tested (90 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
@@ -179,16 +188,18 @@ and shared, so the cutover is a client, not a rewrite.
   expansion spotter, onboarding guide, scout, qbr builder, advocate
   finder, and voice of customer.
 - Proof checklist: every agent self-checks its draft against a "done"
-  checklist before queueing; failures are flagged in the draft metadata
-  and shown in `approvals show`, never a block.
+  checklist before queueing, and every draft carries clickable deep
+  links to the records it cites; failures are flagged in the draft
+  metadata and shown in `approvals show`, never a block, and no
+  aggregate score is shown anywhere.
 - Salesforce and Slack MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
 - The dashboard (v0.8.0): local FastAPI server reading the live queue
-  file. Stat strip, approval queue with proof scores and working
-  approve/reject, source status, agent last-run state, event log, token
-  budget. Every number comes from harness state; an empty queue renders
-  an honest empty state.
+  file. Stat strip, approval queue with completeness checks, source
+  links, and working approve/reject, source status, agent last-run
+  state, event log, token budget. Every number comes from harness
+  state; an empty queue renders an honest empty state.
 
 **Written, not verified against a live system:**
 - The live Salesforce REST/SOQL calls and the live Slack Web API calls.

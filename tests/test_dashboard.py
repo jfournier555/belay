@@ -32,6 +32,12 @@ def _sample_queue(path):
         job={"account": "Acme Corp"},
         draft="Renewal plan for Acme Corp. Health is good. Next step: call.",
         sources=["salesforce_get_account"],
+        links=[
+            {
+                "label": "Account: Acme Corp",
+                "url": "https://stub.salesforce.invalid/lightning/r/Account/001STUB000000001/view",
+            }
+        ],
         proof=[
             {"label": "Names the open renewal opportunity", "passed": True, "detail": "ok"},
             {"label": "Covers account health", "passed": False, "detail": "draft does not mention 'health'"},
@@ -199,8 +205,15 @@ class TestDashboardApp(unittest.TestCase):
         self.assertEqual(len(state["agents"]), 9)
         self.assertEqual(len(state["queue"]), 3)
         first = state["queue"][0]
-        self.assertEqual(first["proof_passed"], 1)
-        self.assertEqual(first["proof_total"], 2)
+        # Links ride along in the state; no aggregate proof score does.
+        self.assertEqual(len(first["links"]), 1)
+        self.assertEqual(
+            first["links"][0]["url"],
+            "https://stub.salesforce.invalid/lightning/r/Account/001STUB000000001/view",
+        )
+        self.assertNotIn("proof_passed", first)
+        self.assertNotIn("proof_total", first)
+        self.assertEqual(len(first["proof"]), 2)
 
     def test_approve_moves_the_draft(self):
         item_id = self.queue.list_pending()[0].id

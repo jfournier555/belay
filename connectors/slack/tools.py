@@ -42,18 +42,21 @@ _STUB_MESSAGES = {
             "author": "jane-csm",
             "channel": "#acme-corp",
             "timestamp": "2026-11-14T15:02:00Z",
+            "permalink": "https://stub.slack.invalid/archives/acme-corp/p1763125320000100",
             "excerpt": "Acme's admin asked about SSO for new hires again, still waiting on the fix from support.",
         },
         {
             "author": "mike-se",
             "channel": "#acme-corp",
             "timestamp": "2026-11-12T10:41:00Z",
+            "permalink": "https://stub.slack.invalid/archives/acme-corp/p1762953660000200",
             "excerpt": "Demoed the new reporting to Acme's ops lead. She wants 50 more seats if the export timeout is fixed.",
         },
         {
             "author": "jane-csm",
             "channel": "#csm-team",
             "timestamp": "2026-11-10T09:18:00Z",
+            "permalink": "https://stub.slack.invalid/archives/csm-team/p1762766280000300",
             "excerpt": "Acme renewal is Feb 15. Champion is solid but I have no second relationship there yet.",
         },
     ],
@@ -119,6 +122,7 @@ def search_messages(
                 "author": m.get("username", "unknown"),
                 "channel": m.get("channel", {}).get("name", "unknown"),
                 "timestamp": m.get("ts", ""),
+                "permalink": m.get("permalink"),
                 "excerpt": text[:200],
             }
         )

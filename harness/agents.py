@@ -32,12 +32,18 @@ Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
 2. The prompt is built from the gathered context, never from raw records.
 3. The LLM drafts; the draft goes to the approval queue, never out directly.
-4. The Draft records which tools were called, so a human can check sources.
+4. The Draft records which tools were called and the deep links to the
+   records they returned, so a human can click through to the source
+   instead of taking the draft's word for it.
 5. Before the draft reaches the queue, the agent self-checks it against
-   its proof checklist (what "done" looks like). A failed item is flagged
-   in the draft metadata for the human reviewer, never a block: the draft
+   its proof checklist (what "done" looks like). The checklist is a
+   completeness gate, not a score: each item is a fact the draft must
+   contain or a source it must have gathered, and one item checks the
+   draft carries source links at all. A failed item is flagged in the
+   draft metadata for the human reviewer, never a block: the draft
    still goes to the queue either way. Human approval remains the final
-   gate.
+   gate. No aggregate score is ever shown: a score would let the
+   reviewer trust the number instead of checking the sources.
 """
 
 from __future__ import annotations
@@ -57,12 +63,18 @@ class Draft:
     agent: str
     job: dict
     sources: list[str] = field(default_factory=list)
+    links: list[dict] = field(default_factory=list)
     tokens_estimate: int = 0
     proof: list[dict] = field(default_factory=list)
 
     @property
     def proof_passed(self) -> bool:
-        """True when every proof item passed (or there is no checklist)."""
+        """True when every proof item passed (or there is no checklist).
+
+        Internal helper for tests only. Nothing user-facing shows an
+        aggregate: the checklist is a completeness gate, and the
+        reviewer reads the per-item results and the source links.
+        """
         return all(item.get("passed", True) for item in self.proof)
 
 
@@ -72,13 +84,15 @@ class ProofItem:
 
     Each item names the evidence it needs. `keywords` must appear in the
     draft text (case-insensitive); `sources` must be among the tools the
-    agent successfully called. An item with neither is a manual check the
-    human reviewer confirms by reading the draft.
+    agent successfully called; `requires_links` means the draft must
+    carry at least one source link. An item with none of these is a
+    manual check the human reviewer confirms by reading the draft.
     """
 
     label: str
     keywords: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
+    requires_links: bool = False
 
     def check(self, draft: Draft) -> dict:
         """Check one item against a draft. Returns a result dict."""
@@ -90,6 +104,8 @@ class ProofItem:
         for source in self.sources:
             if source not in draft.sources:
                 missing.append("source %r was not gathered" % source)
+        if self.requires_links and not draft.links:
+            missing.append("no source links were gathered")
         return {
             "label": self.label,
             "passed": not missing,
@@ -162,7 +178,11 @@ def _build_prompt(agent_name: str, context: dict, task: str) -> str:
     lines.append(
         "Write a concise draft for a customer success manager. "
         "Use only the context below. If a fact is not in the context, "
-        "say so instead of guessing."
+        "say so instead of guessing. Reference each claim to the named "
+        "source it came from: the account record, an opportunity, a "
+        "case, or a Slack message. Never write a URL in the draft; the "
+        "harness attaches the source links itself, so the human "
+        "reviewer can click through to the record."
     )
     lines.append("")
     lines.append("Context:")
@@ -171,15 +191,102 @@ def _build_prompt(agent_name: str, context: dict, task: str) -> str:
     return "\n".join(lines)
 
 
+# Stub hosts are on .invalid, a TLD that never resolves, so a stub link
+# is well-formed but unmistakably fake. The harness only builds a
+# Salesforce link when the tool result carries an instance URL (live)
+# or is stub data (this host); a result with neither yields no link.
+STUB_SALESFORCE_HOST = "https://stub.salesforce.invalid"
+
+
+def _salesforce_base(result: dict) -> str | None:
+    """The base URL for Salesforce deep links from a tool result."""
+    if result.get("instance_url"):
+        return str(result["instance_url"]).rstrip("/")
+    if result.get("_stub"):
+        return STUB_SALESFORCE_HOST
+    return None
+
+
+def extract_links(tool_name: str, result: dict) -> list[dict]:
+    """Build deterministic deep links from one tool result.
+
+    The harness builds these from the record ids the tools returned;
+    the model never writes a URL, so a link can never be hallucinated.
+    A record without an id, or a Salesforce result with no instance
+    URL, yields no link instead of a guessed one. Each link is a dict
+    with a human-readable `label` and a `url`.
+    """
+    links: list[dict] = []
+    if tool_name == "salesforce_get_account":
+        base = _salesforce_base(result)
+        record_id = result.get("id")
+        if base and record_id:
+            links.append(
+                {
+                    "label": "Account: %s" % result.get("name", record_id),
+                    "url": "%s/lightning/r/Account/%s/view"
+                    % (base, record_id),
+                }
+            )
+    elif tool_name == "salesforce_list_opportunities":
+        base = _salesforce_base(result)
+        if base:
+            for opp in result.get("opportunities", []):
+                if opp.get("id"):
+                    links.append(
+                        {
+                            "label": "Opportunity: %s"
+                            % opp.get("name", opp["id"]),
+                            "url": "%s/lightning/r/Opportunity/%s/view"
+                            % (base, opp["id"]),
+                        }
+                    )
+    elif tool_name == "salesforce_list_cases":
+        base = _salesforce_base(result)
+        if base:
+            for case in result.get("cases", []):
+                if case.get("id"):
+                    links.append(
+                        {
+                            "label": "Case %s: %s"
+                            % (
+                                case.get("number", case["id"]),
+                                case.get("subject", ""),
+                            ),
+                            "url": "%s/lightning/r/Case/%s/view"
+                            % (base, case["id"]),
+                        }
+                    )
+    elif tool_name == "slack_search_messages":
+        for match in result.get("matches", []):
+            if match.get("permalink"):
+                links.append(
+                    {
+                        "label": "Slack #%s, %s"
+                        % (
+                            match.get("channel", "unknown").lstrip("#"),
+                            match.get("author", "unknown"),
+                        ),
+                        "url": match["permalink"],
+                    }
+                )
+    return links
+
+
 def _gather(
     registry: ToolRegistry, calls: list[tuple[str, dict]], budget: TokenBudget
-) -> tuple[dict, list[str]]:
+) -> tuple[dict, list[str], list[dict]]:
     """Call tools in order, respecting the token budget. Returns
-    (context dict, list of tool names successfully called). A tool that
-    would blow the budget is skipped, and the skip is recorded in context.
+    (context dict, list of tool names successfully called, list of
+    source links built from the tool results). A tool that would blow
+    the budget is skipped, and the skip is recorded in context. Links
+    are collected only from calls that succeeded within budget, and
+    deduplicated by URL.
     """
     context: dict = {}
     sources: list[str] = []
+    links: list[dict] = []
+    seen_urls: set[str] = set()
     for tool_name, kwargs in calls:
         try:
             result = registry.call(tool_name, **kwargs)
@@ -192,13 +299,43 @@ def _gather(
             continue
         context[tool_name] = rendered
         sources.append(tool_name)
-    return context, sources
+        for link in extract_links(tool_name, result):
+            if link["url"] not in seen_urls:
+                seen_urls.add(link["url"])
+                links.append(link)
+    return context, sources, links
+
+
+# Keys the model must never see: the harness builds source links from
+# these, and a URL in the prompt is a URL the model can copy into the
+# draft. They are excluded from the rendered context, not from the
+# tool result itself, so the link extractor still sees them.
+_URL_KEYS = {"instance_url", "permalink"}
+
+
+def _sanitize_for_prompt(value):
+    """Drop URL-bearing keys from a tool result before rendering.
+
+    The strip is recursive: Slack results carry permalinks inside the
+    nested matches list, and rendering a list with str() would leak
+    them. The harness keeps the URLs for its own link extractor; the
+    model never sees them.
+    """
+    if isinstance(value, dict):
+        return {
+            key: _sanitize_for_prompt(item)
+            for key, item in value.items()
+            if key not in _URL_KEYS
+        }
+    if isinstance(value, list):
+        return [_sanitize_for_prompt(item) for item in value]
+    return value
 
 
 def _render_result(result: dict) -> str:
     """Render a summary-form tool result as compact readable text."""
     parts = []
-    for key, value in result.items():
+    for key, value in _sanitize_for_prompt(result).items():
         parts.append("%s: %s" % (key, value))
     return "; ".join(parts)
 
@@ -237,6 +374,10 @@ class RenewalDeskAgent(Agent):
         ),
         ProofItem("Covers account health", keywords=["health"]),
         ProofItem("Lists next steps", keywords=["step"]),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -247,7 +388,7 @@ class RenewalDeskAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -267,6 +408,7 @@ class RenewalDeskAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
@@ -303,6 +445,10 @@ class BrieferAgent(Agent):
         ),
         ProofItem("Notes what changed", keywords=["changed"]),
         ProofItem("Suggests questions to ask", keywords=["question"]),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -311,7 +457,7 @@ class BrieferAgent(Agent):
             ("salesforce_get_account", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -331,6 +477,7 @@ class BrieferAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
@@ -371,6 +518,10 @@ class ExpansionSpotterAgent(Agent):
             ],
         ),
         ProofItem("Lists next steps", keywords=["step"]),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -381,7 +532,7 @@ class ExpansionSpotterAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -404,6 +555,7 @@ class ExpansionSpotterAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
@@ -450,6 +602,10 @@ class OnboardingGuideAgent(Agent):
             "Names open support cases",
             sources=["salesforce_list_cases"],
         ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -460,7 +616,7 @@ class OnboardingGuideAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -483,6 +639,7 @@ class OnboardingGuideAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
@@ -530,6 +687,10 @@ class ScoutAgent(Agent):
             "Names new opportunities",
             sources=["salesforce_list_opportunities"],
         ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -540,7 +701,7 @@ class ScoutAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -562,6 +723,7 @@ class ScoutAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
@@ -608,6 +770,10 @@ class QBRBuilderAgent(Agent):
             "Covers the plan for next quarter",
             keywords=["next quarter"],
         ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -618,7 +784,7 @@ class QBRBuilderAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -639,6 +805,7 @@ class QBRBuilderAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
@@ -691,6 +858,10 @@ class AdvocateFinderAgent(Agent):
             "Names each champion's influence",
             keywords=["influence"],
         ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -700,7 +871,7 @@ class AdvocateFinderAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -727,6 +898,7 @@ class AdvocateFinderAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
@@ -774,6 +946,10 @@ class VoiceOfCustomerAgent(Agent):
             "Cites Slack messages",
             sources=["slack_search_messages"],
         ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
     ]
 
     def run(self, job, registry, llm, budget):
@@ -782,7 +958,7 @@ class VoiceOfCustomerAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
@@ -804,6 +980,7 @@ class VoiceOfCustomerAgent(Agent):
                 agent=self.name,
                 job=job,
                 sources=sources,
+                links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
             )
         )
