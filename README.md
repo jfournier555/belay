@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v1.13.0**, 15 agents, 9 connectors, 588 tests green.
+**A post sales AI harness.** Current version: **v1.13.1**, 15 agents, 9 connectors, 592 tests green.
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 

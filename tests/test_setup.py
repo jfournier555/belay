@@ -296,6 +296,32 @@ class TestDemoSeed(unittest.TestCase):
             self.assertIn("Real draft from Ollama", item.draft)
         self.assertIn("real responses from Ollama", io.text())
 
+    def test_seed_ollama_up_model_missing_seeds_stub(self):
+        # The server answers but the model is not pulled: the demo
+        # must still seed, stub-labeled, instead of crashing on the
+        # 404 the chat call would return. (v1.13.1 regression: the
+        # seed announced stub drafts, then ran the agents through
+        # the real Ollama client anyway.)
+        self.setup_reachable.return_value = True
+        with (
+            mock.patch(
+                "harness.setup.ollama_models", return_value=["qwen2.5:0.5b"]
+            ),
+            mock.patch("harness.llm.ollama_reachable", return_value=True),
+            mock.patch(
+                "harness.llm.ollama_models", return_value=["qwen2.5:0.5b"]
+            ),
+        ):
+            report, io = self._seed()
+        self.assertEqual(report["status"], "seeded")
+        self.assertFalse(report["real_drafts"])
+        queue = ApprovalQueue(self.config.approvals_file)
+        items = queue.list_all()
+        self.assertEqual(len(items), 4)
+        for item in items:
+            self.assertIn("STUB DRAFT", item.draft)
+        self.assertIn("stub-labeled", io.text())
+
     def test_refuse_over_real_data_default_no(self):
         ApprovalQueue(self.config.approvals_file).submit(
             agent="briefer",

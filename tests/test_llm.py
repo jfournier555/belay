@@ -26,6 +26,7 @@ from harness.config import (
 from harness.llm import (
     OpenAICompatibleLLM,
     StubLLM,
+    _model_pulled,
     get_llm,
     http_client,
     is_ollama_base_url,
@@ -68,6 +69,11 @@ class TestGetLlmResolution(unittest.TestCase):
         self._reachable = mock.patch("harness.llm.ollama_reachable")
         self.reachable = self._reachable.start()
         self.addCleanup(self._reachable.stop)
+        self._models = mock.patch(
+            "harness.llm.ollama_models", return_value=[OLLAMA_DEFAULT_MODEL]
+        )
+        self.models = self._models.start()
+        self.addCleanup(self._models.stop)
 
     def _config(self, **overrides):
         config = Config(
@@ -98,6 +104,30 @@ class TestGetLlmResolution(unittest.TestCase):
     def test_ollama_unreachable_no_key_uses_stub(self):
         self.reachable.return_value = False
         self.assertIsInstance(get_llm(self._config()), StubLLM)
+
+    def test_ollama_reachable_model_not_pulled_uses_stub(self):
+        # The server answers but the configured model is not pulled:
+        # picking Ollama would make every chat call 404, so the
+        # chain falls through to the stub instead of crashing.
+        self.reachable.return_value = True
+        self.models.return_value = ["qwen2.5:0.5b"]
+        self.assertIsInstance(get_llm(self._config()), StubLLM)
+
+    def test_ollama_models_unknown_keeps_ollama(self):
+        # The tags list did not answer: unknown, not empty. The old
+        # behavior stands and Ollama is picked.
+        self.reachable.return_value = True
+        self.models.return_value = None
+        client = get_llm(self._config())
+        self.assertIsInstance(client, OpenAICompatibleLLM)
+        self.assertEqual(client.base_url, OLLAMA_BASE_URL)
+
+    def test_model_pulled_matching(self):
+        self.assertTrue(_model_pulled(["llama3.1:8b"], "llama3.1:8b"))
+        self.assertTrue(_model_pulled(["llama3.1:latest"], "llama3.1"))
+        self.assertTrue(_model_pulled(None, "llama3.1:8b"))
+        self.assertFalse(_model_pulled(["qwen2.5:0.5b"], "llama3.1:8b"))
+        self.assertFalse(_model_pulled([], "llama3.1:8b"))
 
     def test_ollama_unreachable_key_with_default_base_uses_openai(self):
         # A legacy key with no explicit base URL is an OpenAI key.
