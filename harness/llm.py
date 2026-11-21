@@ -39,6 +39,8 @@ from urllib.parse import urlparse
 
 import httpx
 
+from harness.paths import cli_invocation
+
 from .config import (
     OLLAMA_API_BASE,
     OLLAMA_BASE_URL,
@@ -115,10 +117,14 @@ class StubLLM:
     -> tools -> draft -> approval queue) can be exercised without an API key.
     """
 
+    # The setup command is the invocation the user actually has:
+    # `belay setup` in the packaged app, `python -m harness.run
+    # setup` from source. Computed at import: sys.frozen is set
+    # before any module loads in a packaged app.
     STUB_HEADER = (
         "[STUB DRAFT -- no LLM available: Ollama is not reachable at "
         "http://localhost:11434 and no API key is configured. Run "
-        "`python -m harness.run setup` to enable real responses.]"
+        "`%s setup` to enable real responses.]" % cli_invocation()
     )
 
     def complete(

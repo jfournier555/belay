@@ -1,0 +1,124 @@
+# Belay release: the packaged installer (v1.14.0).
+#
+# On a version-tag push (v1.14.0, ...), build the packaged app on all
+# three OSes and attach the files to the GitHub release for that tag.
+# The Windows and macOS binaries can only be built on their own OS:
+# this workflow is the only place they are built. The Linux binary is
+# also built here, so every release ships all three from the same tag.
+#
+# No code signing in this build (unsigned first): signing needs the
+# Apple Developer account and a Windows certificate, which are not
+# available here. The README documents the Gatekeeper and SmartScreen
+# warnings the user clicks through.
+#
+# Per-OS artifacts (one file each):
+# - Windows: belay.exe (the bare executable)
+# - macOS:   Belay-macos.zip (contains Belay.app; a zip is how a .app
+#            bundle ships as a release asset). The .app is a thin
+#            launcher: the harness is interactive (the first-run
+#            wizard prompts), so double-clicking opens a Terminal and
+#            runs the binary inside it.
+# - Linux:   belay-linux (the bare executable, chmod +x)
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: belay.exe
+          - os: macos-latest
+            artifact: Belay-macos.zip
+          - os: ubuntu-latest
+            artifact: belay-linux
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install -r requirements.txt
+          python -m pip install -r requirements-build.txt
+      - name: Check the version matches the tag
+        run: |
+          python -c "import sys; sys.path.insert(0, '.'); from harness import __version__; tag = '${{ github.ref_name }}'[1:]; assert __version__ == tag, 'version %s does not match tag %s' % (__version__, tag)"
+      - name: Build the binary
+        run: pyinstaller belay.spec
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: cmd
+        run: copy dist\belay.exe belay.exe
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          mkdir -p Belay.app/Contents/MacOS Belay.app/Contents/Resources
+          cp dist/belay Belay.app/Contents/MacOS/belay
+          cat > Belay.app/Contents/MacOS/Belay <<'EOF'
+          #!/bin/sh
+          # Double-clicking Belay.app opens a Terminal and runs the
+          # harness: the first-run wizard is interactive, so it needs
+          # a terminal, not a bare .app with no console.
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          open -a Terminal "$DIR/belay"
+          EOF
+          chmod +x Belay.app/Contents/MacOS/Belay Belay.app/Contents/MacOS/belay
+          cat > Belay.app/Contents/Info.plist <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>Belay</string>
+            <key>CFBundleIdentifier</key>
+            <string>net.jfournier.belay</string>
+            <key>CFBundleName</key>
+            <string>Belay</string>
+            <key>CFBundleShortVersionString</key>
+            <string>${VERSION}</string>
+            <key>CFBundleVersion</key>
+            <string>${VERSION}</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>LSMinimumSystemVersion</key>
+            <string>12.0</string>
+          </dict>
+          </plist>
+          EOF
+          ditto -c -k --keepParent Belay.app Belay-macos.zip
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cp dist/belay belay-linux
+          chmod +x belay-linux
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/belay.exe
+            artifacts/Belay-macos.zip
+            artifacts/belay-linux
+          generate_release_notes: true

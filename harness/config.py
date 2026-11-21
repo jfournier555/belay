@@ -61,25 +61,31 @@ Environment variables:
     CHAMPIFY_API_BASE_URL    Champify API base URL. Default:
                              https://api.champify.io/v1
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
-                             Default: approvals.json (in the working dir).
+                             Default: approvals.json (in the working dir;
+                             in the packaged app, the per-OS user data
+                             directory instead, v1.14.0).
     HARNESS_MEMORY_FILE      Path to the per-account memory JSON file.
-                             Default: memory.json (in the working dir).
-                             Memory is local only; nothing in it is ever
-                             sent anywhere.
+                             Default: memory.json (in the working dir;
+                             in the packaged app, the user data
+                             directory). Memory is local only; nothing
+                             in it is ever sent anywhere.
     HARNESS_SCHEDULES_FILE   Path to the schedule JSON file (v1.4.0).
                              Default: schedules.json (in the working
-                             dir). One object per schedule: agent,
+                             dir; in the packaged app, the user data
+                             directory). One object per schedule: agent,
                              account, cadence, time, timezone.
     HARNESS_MCP_SERVERS_FILE Path to the external MCP server JSON file
                              (v1.5.0). Default: mcp-servers.json (in
-                             the working dir). One object per server:
+                             the working dir; in the packaged app, the
+                             user data directory). One object per server:
                              name, transport (stdio or sse), command
                              and args, or url. A missing file means no
                              external servers.
     HARNESS_ESCALATIONS_FILE
                              Path to the escalation-state JSON file
                              (v1.7.0). Default: escalations.json (in
-                             the working dir). One record per risk
+                             the working dir; in the packaged app, the
+                             user data directory). One record per risk
                              signal per account: open, escalated,
                              resolved.
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
@@ -90,6 +96,11 @@ Environment variables:
                              without it (and without --hourly-rate on the
                              run) time saved is reported in hours only,
                              not dollars.
+    BELAY_DATA_DIR           Override for the packaged app's user data
+                             directory (v1.14.0): the state files and
+                             .env live there instead of the working
+                             directory. Set automatically when running
+                             as a packaged binary.
 """
 
 from __future__ import annotations
@@ -98,6 +109,13 @@ import os
 from dataclasses import dataclass
 
 from dotenv import load_dotenv
+
+from harness.paths import (
+    default_env_path,
+    default_store_path,
+    ensure_data_dir,
+    uses_data_dir,
+)
 
 # The default LLM is Ollama, self-hosted and local: a new user gets
 # real responses out of the box with no API key. The OpenAI defaults
@@ -159,6 +177,7 @@ class Config:
     escalations_file: str = "escalations.json"
     token_budget_per_job: int = 8000
     loaded_hourly_rate: float | None = None
+    env_path: str = ".env"
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -167,7 +186,19 @@ class Config:
         A .env file in the working directory (or above it) is loaded
         first, so values written there take effect without exporting
         anything. Real environment variables always win: load_dotenv
-        never overrides one that is already set."""
+        never overrides one that is already set.
+
+        In the packaged app (v1.14.0), or when BELAY_DATA_DIR is set,
+        the state files and .env live in the per-OS user data
+        directory instead of the working directory, and the data
+        directory is created here, so the stores never fail on a
+        missing parent. The data-dir .env loads first, so it wins
+        over a stray .env in the launch directory; the working-dir
+        search still runs after it, for values the data-dir .env
+        does not set."""
+        if uses_data_dir():
+            ensure_data_dir()
+            load_dotenv(default_env_path())
         load_dotenv()
         return cls(
             llm_base_url=os.environ.get(
@@ -206,17 +237,19 @@ class Config:
                 "CHAMPIFY_API_BASE_URL", "https://api.champify.io/v1"
             ),
             approvals_file=os.environ.get(
-                "HARNESS_APPROVALS_FILE", "approvals.json"
+                "HARNESS_APPROVALS_FILE", default_store_path("approvals.json")
             ),
-            memory_file=os.environ.get("HARNESS_MEMORY_FILE", "memory.json"),
+            memory_file=os.environ.get(
+                "HARNESS_MEMORY_FILE", default_store_path("memory.json")
+            ),
             schedules_file=os.environ.get(
-                "HARNESS_SCHEDULES_FILE", "schedules.json"
+                "HARNESS_SCHEDULES_FILE", default_store_path("schedules.json")
             ),
             mcp_servers_file=os.environ.get(
-                "HARNESS_MCP_SERVERS_FILE", "mcp-servers.json"
+                "HARNESS_MCP_SERVERS_FILE", default_store_path("mcp-servers.json")
             ),
             escalations_file=os.environ.get(
-                "HARNESS_ESCALATIONS_FILE", "escalations.json"
+                "HARNESS_ESCALATIONS_FILE", default_store_path("escalations.json")
             ),
             token_budget_per_job=int(
                 os.environ.get("HARNESS_TOKEN_BUDGET", "8000")
@@ -224,6 +257,7 @@ class Config:
             loaded_hourly_rate=_parse_rate(
                 os.environ.get("HARNESS_LOADED_HOURLY_RATE")
             ),
+            env_path=default_env_path(),
         )
 
     @property

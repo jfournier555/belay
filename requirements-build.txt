@@ -1,0 +1,5 @@
+# Build-only dependencies for the packaged installer (v1.14.0).
+# Not a runtime requirement: the shipped binary bundles its own
+# dependencies. Installed by the release workflow and by hand when
+# building locally: pip install -r requirements-build.txt
+pyinstaller>=6

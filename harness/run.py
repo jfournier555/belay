@@ -98,6 +98,7 @@ from harness.mcp_client import (
     MCPServerStore,
     load_external_tools,
 )
+from harness.paths import cli_invocation
 from harness.setup import (
     clear_demo,
     print_setup_hint,
@@ -189,12 +190,12 @@ def cmd_setup(args: argparse.Namespace) -> int:
         if report["status"] == "already-seeded":
             print(
                 "Demo data is already seeded. Clear it first with: "
-                "python -m harness.run setup --clear-demo"
+                "%s setup --clear-demo" % cli_invocation()
             )
             return 0
         return 1
     if args.wizard:
-        run_setup_wizard(config)
+        run_setup_wizard(config, env_path=config.env_path)
         return 0
     if not sys.stdin.isatty():
         print("First run. Two ways in:")
@@ -210,11 +211,11 @@ def cmd_setup(args: argparse.Namespace) -> int:
         if report["status"] == "already-seeded":
             print(
                 "Demo data is already seeded. Clear it first with: "
-                "python -m harness.run setup --clear-demo"
+                "%s setup --clear-demo" % cli_invocation()
             )
             return 0
         return 1
-    run_setup_wizard(config)
+    run_setup_wizard(config, env_path=config.env_path)
     return 0
 
 
@@ -372,7 +373,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         print("--- draft ---")
         print(draft.text)
         print("--- end draft ---")
-    print("Review it with: python -m harness.run approvals show %s" % item.id)
+    print("Review it with: %s approvals show %s" % (cli_invocation(), item.id))
     return 0
 
 
@@ -591,9 +592,10 @@ def cmd_schedules(args: argparse.Namespace) -> int:
         schedules = store.list()
         if not schedules:
             print(
-                "No schedules. Add one with: python -m harness.run "
+                "No schedules. Add one with: %s "
                 "schedules add --agent briefer --account \"Acme Corp\" "
                 "--cadence daily --time 07:00 --timezone America/Los_Angeles"
+                % cli_invocation()
             )
             return 0
         for schedule in schedules:
@@ -707,9 +709,10 @@ def cmd_mcp_servers(args: argparse.Namespace) -> int:
         servers = store.list()
         if not servers:
             print(
-                "No MCP servers configured. Add one with: python -m "
-                "harness.run mcp-servers add --name gmail --stdio "
+                "No MCP servers configured. Add one with: %s "
+                "mcp-servers add --name gmail --stdio "
                 "\"python -m connectors.gmail.server\""
+                % cli_invocation()
             )
             return 0
         for server in servers:

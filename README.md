@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v1.13.1**, 15 agents, 9 connectors, 592 tests green.
+**A post sales AI harness.** Current version: **v1.14.0**, 15 agents, 9 connectors, 612 tests green.
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -10,7 +10,20 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 
 ## First run
 
-One command, from clone to a running harness:
+Download one file, no Python, no terminal:
+
+- **Windows:** `belay.exe` from the [latest release](https://github.com/jfournier555/belay/releases). Double-click it.
+- **macOS:** `Belay-macos.zip` from the [latest release](https://github.com/jfournier555/belay/releases). Unzip it, double-click `Belay.app`. It opens a Terminal and runs the harness there: the first-run wizard is interactive, so it needs a terminal.
+- **Linux:** `belay-linux` from the [latest release](https://github.com/jfournier555/belay/releases). `chmod +x belay-linux`, then `./belay-linux` (or double-click it in the file manager).
+
+The first run is the wizard: one question with two answers, Fill with Demo data or Run Setup Wizard. Ollama is the default LLM and is not bundled with the app (it is a separate runtime): the wizard detects it and offers to install it for you. Your data (`.env`, approvals, memory, schedules, escalations) lives in your user data folder, never next to the app: `%APPDATA%\Belay` on Windows, `~/Library/Application Support/Belay` on macOS, `~/.local/share/belay` on Linux.
+
+Unsigned, first release: the app is not code-signed yet. The warnings, and what to click:
+- **macOS:** Gatekeeper says Belay cannot be opened because the developer cannot be verified. Right-click (Control-click) `Belay.app`, choose Open, then click Open in the dialog.
+- **Windows:** SmartScreen says Windows protected your PC. Click More info, then Run anyway.
+- **Linux:** no warning; the executable bit is the only step.
+
+Build from source, if the download is not for you. One command, from clone to a running harness:
 
 ```bash
 git clone https://github.com/jfournier555/belay.git
@@ -392,7 +405,9 @@ can use any MCP server the user already has connected.
 Servers live in one JSON file (`mcp-servers.json`,
 `HARNESS_MCP_SERVERS_FILE` to move it), human-editable, same
 file-backed pattern as schedules and memory. A missing file means no
-external servers.
+external servers. In the packaged app, an external stdio server whose
+command is `python` needs a real Python on PATH; the built-in
+connectors run inside the app and are unaffected.
 
 ```bash
 # A stdio server: the harness's own Gmail server, as an external server.

@@ -62,6 +62,7 @@ from harness.llm import (
     ollama_reachable,
 )
 from harness.memory import AccountMemory
+from harness.paths import cli_invocation
 from harness.scheduler import ScheduleStore
 
 DEMO_ACCOUNT = "Acme Corp"
@@ -253,7 +254,7 @@ def print_setup_hint(config: Config, out=None, interactive: bool = True) -> bool
         return False
     (out or print)(
         "Tip: nothing is configured yet (no Ollama, no API key). Run "
-        "`python -m harness.run setup` for demo data or the setup wizard."
+        "`%s setup` for demo data or the setup wizard." % cli_invocation()
     )
     return True
 
@@ -1090,8 +1091,8 @@ def seed_demo(
     if not real_drafts:
         out(
             "Demo drafts will be stub-labeled: Ollama is not reachable "
-            "or the model is not pulled. Run `python -m harness.run "
-            "setup` to enable real responses."
+            "or the model is not pulled. Run `%s setup` to enable real "
+            "responses." % cli_invocation()
         )
     demo_config = _demo_config(config)
 
@@ -1390,8 +1391,8 @@ def run_setup_wizard(
             {"agent": "renewal-desk", "account": DEMO_ACCOUNT, "text": DEMO_ACCOUNT},
         )
         out(
-            "Demo draft queued: %s (%s). Review it with: python -m "
-            "harness.run approvals show %s" % (item.id, agent.display_name, item.id)
+            "Demo draft queued: %s (%s). Review it with: %s approvals "
+            "show %s" % (item.id, agent.display_name, cli_invocation(), item.id)
         )
     return {
         "configured": configured,
