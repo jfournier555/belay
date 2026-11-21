@@ -1159,12 +1159,19 @@ class ScoutAgent(Agent):
 class QBRBuilderAgent(Agent):
     """Drafts a quarterly business review for an account.
 
-    Gathers: account summary, open opportunities, open support cases, and
-    recent Slack signals. Drafts: outcomes delivered this quarter, adoption
-    and value realized, open risks and support cases, and the plan for next
-    quarter. This is the agent that turns the account picture into the QBR
-    deck narrative: what was delivered, what it is worth, what is at risk,
-    and what happens next.
+    Composition (v1.1.0): when prior drafts from renewal-desk,
+    expansion-spotter, and voice-of-customer exist for the account in
+    the approval queue, the QBR is built from those drafts instead of
+    re-gathering the same context. Only the account record is gathered
+    directly; the source drafts carry the opportunities, cases, and
+    Slack signals, and their deep links carry through to the composed
+    draft. When no prior drafts exist, the agent gathers directly, its
+    previous behavior. Composition is an optimization, never a hard
+    dependency. Drafts: outcomes delivered this quarter, adoption and
+    value realized, open risks and support cases, and the plan for next
+    quarter. This is the agent that turns the account picture into the
+    QBR deck narrative: what was delivered, what it is worth, what is
+    at risk, and what happens next.
     """
 
     name = "qbr-builder"
@@ -1205,6 +1212,68 @@ class QBRBuilderAgent(Agent):
 
     def run(self, job, registry, llm, budget):
         account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _QBR_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the account
+            # record is gathered directly; the source drafts carry the
+            # rest. The draft carries a harness-written provenance
+            # line naming the agents it was composed from, so the
+            # composition proof item checks a fact, not model prose.
+            context, sources, links = _gather(
+                registry,
+                [("salesforce_get_account", {"account": account})],
+                budget,
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            prompt = _build_prompt(
+                self.name,
+                context,
+                "Draft a quarterly business review for account %r. "
+                "Build it from the prior agent drafts in the context: "
+                "renewal-desk health and risks, expansion-spotter "
+                "gaps, voice-of-customer themes. Cover: outcomes "
+                "delivered this quarter, adoption and value realized, "
+                "open risks and support cases, and the plan for next "
+                "quarter." % account,
+            )
+            system = (
+                "You are the QBR builder for a customer success team. "
+                "You draft quarterly business reviews. Lead with outcomes, "
+                "name the risks, and do not invent numbers that are not in "
+                "the context."
+            )
+            text = llm.complete(prompt, system=system)
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist = self.proof_checklist + [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+            return self._finish(
+                Draft(
+                    text=text,
+                    agent=self.name,
+                    job=job,
+                    sources=sources,
+                    links=links,
+                    tokens_estimate=estimate_tokens(prompt)
+                    + estimate_tokens(text),
+                ),
+                checklist=checklist,
+            )
+        # Fallback: no prior drafts for this account, gather directly
+        # as before.
         calls = [
             ("salesforce_get_account", {"account": account}),
             ("salesforce_list_opportunities", {"account": account}),
@@ -1594,13 +1663,68 @@ def _value_figures(
 # share; no new cross-agent mechanism is introduced.
 _PRIOR_DRAFT_AGENTS = ("renewal-desk", "expansion-spotter", "onboarding-guide")
 
+# The three agents whose drafts qbr-builder composes (SPEC.md v1.1.0):
+# renewal-desk health and risks, expansion-spotter gaps,
+# voice-of-customer themes. Same store, same rule: the queue is the
+# only channel between agents.
+_QBR_SOURCE_AGENTS = ("renewal-desk", "expansion-spotter", "voice-of-customer")
 
-def _prior_drafts(job: dict, account: str) -> str:
+
+def _load_prior_items(job: dict, account: str, agents: tuple) -> list:
+    """Prior drafts from the named agents for this account, from the
+    approval queue file the job names. Newest first; ties (same
+    created second) break toward the later-submitted item. Empty when
+    the job names no approvals file or the queue cannot be read:
+    composition is an optimization, never a hard dependency, so a
+    missing queue reads as no prior drafts, not an error."""
+    path = job.get("approvals_file")
+    if not path:
+        return []
+    try:
+        queue = ApprovalQueue(path)
+    except Exception:
+        return []
+    indexed = list(enumerate(queue.list_all()))
+    items = [
+        item
+        for _i, item in indexed
+        if item.agent in agents
+        and _extract_account(item.job) == account
+    ]
+    order = {id(item): i for i, item in indexed}
+    items.sort(key=lambda item: (item.created_at, order[id(item)]), reverse=True)
+    return items
+
+
+def _format_prior_items(items: list) -> str:
+    """Prior drafts as prompt context. Excerpts are capped at 500
+    characters and URLs are stripped: the model never sees a URL."""
+    parts = []
+    for item in items:
+        excerpt = re.sub(r"https?://\S+", "[link removed]", item.draft)
+        excerpt = " ".join(excerpt.split())
+        if len(excerpt) > 500:
+            excerpt = excerpt[:500] + " ..."
+        parts.append(
+            "%s (%s): %s" % (item.agent, item.created_at, excerpt)
+        )
+    return "Prior agent drafts for this account:\n" + "\n".join(parts)
+
+
+def _agent_list_text(agents: tuple) -> str:
+    """Agent names as a readable list: 'a, b, or c'."""
+    if len(agents) == 1:
+        return agents[0]
+    return "%s, or %s" % (", ".join(agents[:-1]), agents[-1])
+
+
+def _prior_drafts(
+    job: dict, account: str, agents: tuple = _PRIOR_DRAFT_AGENTS
+) -> str:
     """Prior drafts from the other agents for this account, from the
     approval queue file the job names. The queue is the store those
     drafts already share; value-finder reads it, it does not invent a
-    new channel. Returns a short summary for the prompt context. URLs
-    are stripped from the excerpts: the model never sees a URL."""
+    new channel. Returns a short summary for the prompt context."""
     path = job.get("approvals_file")
     if not path:
         return (
@@ -1611,28 +1735,46 @@ def _prior_drafts(job: dict, account: str) -> str:
         queue = ApprovalQueue(path)
     except Exception:
         return "Prior agent drafts could not be read."
-    items = [
-        item
-        for item in queue.list_all()
-        if item.agent in _PRIOR_DRAFT_AGENTS
-        and _extract_account(item.job) == account
-    ]
+    items = _load_prior_items(job, account, agents)
     if not items:
         return (
-            "No prior drafts from renewal-desk, expansion-spotter, or "
-            "onboarding-guide for this account."
+            "No prior drafts from %s for this account."
+            % _agent_list_text(agents)
         )
-    items.sort(key=lambda i: i.created_at, reverse=True)
-    parts = []
-    for item in items[:3]:
-        excerpt = re.sub(r"https?://\S+", "[link removed]", item.draft)
-        excerpt = " ".join(excerpt.split())
-        if len(excerpt) > 500:
-            excerpt = excerpt[:500] + " ..."
-        parts.append(
-            "%s (%s): %s" % (item.agent, item.created_at, excerpt)
-        )
-    return "Prior agent drafts for this account:\n" + "\n".join(parts)
+    return _format_prior_items(items[:3])
+
+
+def _compose_sources(
+    job: dict, account: str, agents: tuple
+) -> tuple[str, list[dict], list[str]]:
+    """The composition helper (v1.1.0): the latest draft from each named
+    agent for this account, from the approval queue. Returns (summary
+    text, merged deep links, agent names used). Empty (\"\", [], []) when
+    no prior drafts exist: the caller falls back to gathering directly.
+    Links are the source drafts' own harness-built deep links,
+    deduplicated by URL; the excerpts are stripped the same way
+    _prior_drafts strips them, so the model never sees a URL."""
+    items = _load_prior_items(job, account, agents)
+    if not items:
+        return "", [], []
+    latest: dict[str, object] = {}
+    for item in items:  # newest first, so the first per agent wins
+        if item.agent not in latest:
+            latest[item.agent] = item
+    chosen = [latest[name] for name in agents if name in latest]
+    links: list[dict] = []
+    seen: set[str] = set()
+    for item in chosen:
+        for link in item.links:
+            url = link.get("url")
+            if url and url not in seen:
+                seen.add(url)
+                links.append(link)
+    return (
+        _format_prior_items(chosen),
+        links,
+        [item.agent for item in chosen],
+    )
 
 
 class ValueFinderAgent(Agent):

@@ -117,13 +117,16 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     agent = AGENTS[route.agent]
     print("Routed to %s (%s, %s)." % (agent.display_name, route.agent, route.reason))
+    if route.agent in ("value-finder", "qbr-builder"):
+        # Value-finder and qbr-builder read prior drafts from the
+        # approval queue (value-finder synthesizes them, qbr-builder
+        # composes from them); the queue path travels with the job.
+        job["approvals_file"] = config.approvals_file
     if route.agent == "value-finder":
-        # Value-finder reads prior drafts from the approval queue and
-        # quantifies time saved from explicit inputs only: the loaded
-        # hourly rate comes from --hourly-rate or
+        # Value-finder quantifies time saved from explicit inputs only:
+        # the loaded hourly rate comes from --hourly-rate or
         # HARNESS_LOADED_HOURLY_RATE, the hours from --hours-saved.
         # Neither is ever assumed.
-        job["approvals_file"] = config.approvals_file
         if args.hourly_rate is not None:
             job["hourly_rate"] = args.hourly_rate
             job["hourly_rate_source"] = "CLI --hourly-rate"

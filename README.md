@@ -143,10 +143,25 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | scout | implemented | Finds new information: stakeholders, org changes, hiring signals. |
 | onboarding-guide | implemented | Drafts onboarding plans and first-value checklists. |
 | expansion-spotter | implemented | Finds expansion openings: usage gaps, new teams. |
-| qbr-builder | implemented | Drafts a quarterly business review: outcomes, adoption, risks. |
+| qbr-builder | implemented | Drafts a quarterly business review: outcomes, adoption, risks. Composes from prior renewal-desk, expansion-spotter, and voice-of-customer drafts when they exist; gathers directly otherwise. |
 | advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it, how much influence each carries, and which champions changed jobs. |
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
 | value-finder | implemented | Finds realized and unrealized outcomes in money or time: time saved, revenue protected, gaps not yet captured. Every dollar figure is labeled measured or modeled with its basis. |
+
+## Composition
+
+Agents build on each other's outputs. The approval queue is the only
+channel between them: no new store, no new framework.
+
+The first use is qbr-builder. When prior drafts from renewal-desk,
+expansion-spotter, and voice-of-customer exist for the account, the
+QBR is built from those drafts instead of re-gathering the same
+context. Only the account record is gathered directly. The composed
+draft carries the deep links from its source drafts, and a
+harness-written line names the agents it was composed from.
+
+When no prior drafts exist, qbr-builder gathers directly, exactly as
+before. Composition is an optimization, never a hard dependency.
 
 ## Dashboard
 
@@ -174,7 +189,7 @@ agent candidates below.
 | Piece | Target | What it will do |
 |---|---|---|
 | dashboard | v0.8.0 (shipped) | Local web UI over the live approval queue: stat strip, queue with completeness checks, source links, and approve/reject, sources, agents, event log, token budget. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision. |
-| composition | v1.1.0 | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts. |
+| composition | v1.1.0 (shipped) | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts, falling back to direct gathering when no prior drafts exist. |
 | memory | v1.2.0 | Persistent memory across runs: past drafts, decisions, and corrections per account. |
 | write-back | v1.3.0 | The first write tools plus approval-gated execution. The Salesforce updater agent is the first use. |
 | scheduling | v1.4.0 | A daemon that runs the harness on its own, so watch agents actually watch. |
