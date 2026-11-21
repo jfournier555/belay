@@ -114,6 +114,15 @@ def source_statuses(config: Config) -> list[dict]:
                 else "No credentials: stub data."
             ),
         },
+        {
+            "name": "HubSpot",
+            "status": "live" if config.hubspot_configured() else "stub",
+            "detail": (
+                "Connected."
+                if config.hubspot_configured()
+                else "No credentials: stub data."
+            ),
+        },
     ]
 
 

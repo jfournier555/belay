@@ -21,6 +21,11 @@ Environment variables:
     GONG_API_BASE_URL        Gong API base URL. Default: https://api.gong.io/v2
                              (regional instances take the form
                              https://{region}.api.gong.io/v2).
+    HUBSPOT_ACCESS_TOKEN     HubSpot private app access token (Bearer auth).
+    HUBSPOT_PORTAL_ID        HubSpot portal (hub) id, for deep links to
+                             records. Optional: without it the harness still
+                             gathers, but builds no HubSpot links. Falls
+                             back to the account-info API when unset.
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
@@ -46,6 +51,8 @@ class Config:
     slack_bot_token: str | None = None
     gong_access_token: str | None = None
     gong_api_base_url: str = "https://api.gong.io/v2"
+    hubspot_access_token: str | None = None
+    hubspot_portal_id: str | None = None
     approvals_file: str = "approvals.json"
     token_budget_per_job: int = 8000
 
@@ -69,6 +76,9 @@ class Config:
             gong_api_base_url=os.environ.get(
                 "GONG_API_BASE_URL", "https://api.gong.io/v2"
             ),
+            hubspot_access_token=os.environ.get("HUBSPOT_ACCESS_TOKEN")
+            or None,
+            hubspot_portal_id=os.environ.get("HUBSPOT_PORTAL_ID") or None,
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", "approvals.json"
             ),
@@ -101,3 +111,7 @@ class Config:
     def gong_configured(self) -> bool:
         """True when a Gong token is present and stub mode is off."""
         return bool(self.gong_access_token and not self.stub_mode)
+
+    def hubspot_configured(self) -> bool:
+        """True when a HubSpot token is present and stub mode is off."""
+        return bool(self.hubspot_access_token and not self.stub_mode)

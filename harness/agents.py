@@ -130,11 +130,15 @@ class Agent:
     implemented: bool = True
     proof_checklist: list[ProofItem] = []
 
-    def _finish(self, draft: Draft) -> Draft:
+    def _finish(
+        self, draft: Draft, checklist: list[ProofItem] | None = None
+    ) -> Draft:
         """Run the proof checklist and attach the results to the draft.
         The draft goes to the approval queue either way; a failed item is
-        a flag for the human reviewer, not a block."""
-        draft.proof = check_proof(self.proof_checklist, draft)
+        a flag for the human reviewer, not a block. `checklist` overrides
+        the agent's default checklist: renewal-desk uses it for the
+        HubSpot path, where the same items name HubSpot tools."""
+        draft.proof = check_proof(checklist or self.proof_checklist, draft)
         return draft
 
     def run(
@@ -205,6 +209,24 @@ STUB_GONG_HOST = "https://app.gong.invalid"
 GONG_APP_HOST = "https://app.gong.io"
 
 
+# HubSpot record links are built from the portal id and the record id:
+# https://app.hubspot.com/contacts/<portalId>/company/<companyId> (and
+# /deal/<dealId>, /ticket/<ticketId>). Stub data links to the same path
+# on .invalid with portal id 0, so a stub link is well-formed but
+# unmistakably fake.
+STUB_HUBSPOT_HOST = "https://app.hubspot.invalid"
+HUBSPOT_APP_HOST = "https://app.hubspot.com"
+
+
+def _hubspot_base(result: dict) -> str | None:
+    """The base URL for HubSpot deep links from a tool result."""
+    if result.get("_stub"):
+        return STUB_HUBSPOT_HOST
+    if result.get("portal_id"):
+        return HUBSPOT_APP_HOST
+    return None
+
+
 def _gong_base(result: dict) -> str:
     """The base URL for Gong deep links from a tool result."""
     if result.get("_stub"):
@@ -269,6 +291,45 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                             ),
                             "url": "%s/lightning/r/Case/%s/view"
                             % (base, case["id"]),
+                        }
+                    )
+    elif tool_name == "hubspot_get_company":
+        base = _hubspot_base(result)
+        portal = result.get("portal_id")
+        record_id = result.get("id")
+        if base and portal is not None and record_id:
+            links.append(
+                {
+                    "label": "Company: %s" % result.get("name", record_id),
+                    "url": "%s/contacts/%s/company/%s"
+                    % (base, portal, record_id),
+                }
+            )
+    elif tool_name == "hubspot_list_deals":
+        base = _hubspot_base(result)
+        portal = result.get("portal_id")
+        if base and portal is not None:
+            for deal in result.get("deals", []):
+                if deal.get("id"):
+                    links.append(
+                        {
+                            "label": "Deal: %s" % deal.get("name", deal["id"]),
+                            "url": "%s/contacts/%s/deal/%s"
+                            % (base, portal, deal["id"]),
+                        }
+                    )
+    elif tool_name == "hubspot_list_tickets":
+        base = _hubspot_base(result)
+        portal = result.get("portal_id")
+        if base and portal is not None:
+            for ticket in result.get("tickets", []):
+                if ticket.get("id"):
+                    links.append(
+                        {
+                            "label": "Ticket: %s"
+                            % ticket.get("subject", ticket["id"]),
+                            "url": "%s/contacts/%s/ticket/%s"
+                            % (base, portal, ticket["id"]),
                         }
                     )
     elif tool_name == "slack_search_messages":
@@ -397,9 +458,11 @@ def _render_result(result: dict) -> str:
 class RenewalDeskAgent(Agent):
     """Drafts a renewal plan for an account.
 
-    Gathers: account summary, open renewal opportunity, open support cases,
+    Gathers: account health, open renewal opportunity, open support cases,
     and recent Slack signals. Drafts: account health, risks, next steps, and
-    a message to the customer.
+    a message to the customer. The CRM it gathers from is the registry's
+    `crm`: Salesforce by default, HubSpot when HubSpot is configured and
+    Salesforce is not. The proof checklist follows the CRM.
     """
 
     name = "renewal-desk"
@@ -433,15 +496,40 @@ class RenewalDeskAgent(Agent):
             requires_links=True,
         ),
     ]
+    hubspot_proof_checklist = [
+        ProofItem(
+            "Names the open renewal deal",
+            sources=["hubspot_list_deals"],
+        ),
+        ProofItem(
+            "Names open support tickets",
+            sources=["hubspot_list_tickets"],
+        ),
+        ProofItem("Covers account health", keywords=["health"]),
+        ProofItem("Lists next steps", keywords=["step"]),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
 
     def run(self, job, registry, llm, budget):
         account = _extract_account(job)
-        calls = [
-            ("salesforce_get_account", {"account": account}),
-            ("salesforce_list_opportunities", {"account": account}),
-            ("salesforce_list_cases", {"account": account}),
-            ("slack_search_messages", {"query": account, "limit": 5}),
-        ]
+        if getattr(registry, "crm", "salesforce") == "hubspot":
+            calls = [
+                ("hubspot_get_company", {"company": account}),
+                ("hubspot_list_deals", {"company": account}),
+                ("hubspot_list_tickets", {"company": account}),
+            ]
+            checklist = self.hubspot_proof_checklist
+        else:
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+            ]
+            checklist = self.proof_checklist
+        calls.append(("slack_search_messages", {"query": account, "limit": 5}))
         context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
@@ -464,7 +552,8 @@ class RenewalDeskAgent(Agent):
                 sources=sources,
                 links=links,
                 tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
-            )
+            ),
+            checklist=checklist,
         )
 
 

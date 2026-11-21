@@ -51,10 +51,17 @@ class Tool:
 
 
 class ToolRegistry:
-    """Holds the tools agents may call, by name."""
+    """Holds the tools agents may call, by name.
 
-    def __init__(self) -> None:
+    `crm` is which CRM the agents gather from: "salesforce" (default) or
+    "hubspot". It is set by build_registry() from the config: HubSpot when
+    it is configured and Salesforce is not. A registry built directly (as
+    in the tests) defaults to Salesforce, so the demo is unchanged.
+    """
+
+    def __init__(self, crm: str = "salesforce") -> None:
         self._tools: dict[str, Tool] = {}
+        self.crm = crm
 
     def register(self, tool: Tool) -> None:
         """Register a tool. Re-registering the same name replaces it."""
