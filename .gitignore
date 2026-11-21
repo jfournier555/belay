@@ -17,6 +17,8 @@ approvals.json
 approvals.json.tmp
 memory.json
 memory.json.tmp
+mcp-servers.json
+mcp-servers.json.tmp
 
 # OS
 .DS_Store

@@ -65,6 +65,7 @@ from dataclasses import dataclass, field
 
 from .approvals import ApprovalQueue
 from .llm import LLMClient
+from .mcp_client import build_external_calls
 from .memory import AccountMemory
 from .registry import ToolRegistry
 from .summarizer import TokenBudget, estimate_tokens
@@ -643,8 +644,27 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
     return links
 
 
+def external_calls_for_job(
+    job: dict, registry: ToolRegistry
+) -> list[tuple[str, dict]]:
+    """The external tool calls for a job, selected by description.
+
+    Thin wrapper over the MCP client's build_external_calls: the job
+    text is scored against each external tool's name and description,
+    and the matching tools are called with arguments filled from the
+    job. No external servers configured costs nothing (an empty list).
+    Write-flagged external tools are never returned: gathering can
+    never run one, only the approval-gated executor can."""
+    if job is None:
+        return []
+    return build_external_calls(registry, job)
+
+
 def _gather_with_results(
-    registry: ToolRegistry, calls: list[tuple[str, dict]], budget: TokenBudget
+    registry: ToolRegistry,
+    calls: list[tuple[str, dict]],
+    budget: TokenBudget,
+    job: dict | None = None,
 ) -> tuple[dict, list[str], list[dict], dict]:
     """Call tools in order, respecting the token budget. Returns
     (context dict, list of tool names successfully called, list of
@@ -661,7 +681,14 @@ def _gather_with_results(
     links: list[dict] = []
     results: dict = {}
     seen_urls: set[str] = set()
-    for tool_name, kwargs in calls:
+    all_calls = list(calls)
+    if job is not None:
+        # External tools the job asks for (v1.5.0): selected by
+        # description, appended after the agent's own calls, so the
+        # agent's built-in sources always gather first and the budget
+        # check still applies to every external result.
+        all_calls.extend(external_calls_for_job(job, registry))
+    for tool_name, kwargs in all_calls:
         try:
             result = registry.call(tool_name, **kwargs)
         except Exception as exc:  # tool missing, API down, bad args
@@ -682,17 +709,21 @@ def _gather_with_results(
 
 
 def _gather(
-    registry: ToolRegistry, calls: list[tuple[str, dict]], budget: TokenBudget
+    registry: ToolRegistry,
+    calls: list[tuple[str, dict]],
+    budget: TokenBudget,
+    job: dict | None = None,
 ) -> tuple[dict, list[str], list[dict]]:
     """Call tools in order, respecting the token budget. Returns
     (context dict, list of tool names successfully called, list of
     source links built from the tool results). A tool that would blow
     the budget is skipped, and the skip is recorded in context. Links
     are collected only from calls that succeeded within budget, and
-    deduplicated by URL.
+    deduplicated by URL. `job` carries the job through so external
+    tools the job asks for are gathered too (v1.5.0).
     """
     context, sources, links, _results = _gather_with_results(
-        registry, calls, budget
+        registry, calls, budget, job=job
     )
     return context, sources, links
 
@@ -825,7 +856,7 @@ class RenewalDeskAgent(Agent):
         calls.append(("slack_search_messages", {"query": account, "limit": 5}))
         calls.append(("gmail_search_messages", {"query": account, "limit": 5}))
         calls.append(("linear_list_issues", {}))
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -899,7 +930,7 @@ class BrieferAgent(Agent):
             ("salesforce_get_account", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -977,7 +1008,7 @@ class ExpansionSpotterAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -1064,7 +1095,7 @@ class OnboardingGuideAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -1152,7 +1183,7 @@ class ScoutAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -1252,6 +1283,7 @@ class QBRBuilderAgent(Agent):
                 registry,
                 [("salesforce_get_account", {"account": account})],
                 budget,
+                job=job,
             )
             context["prior_agent_drafts"] = composed_text
             seen_urls = {link.get("url") for link in links}
@@ -1310,7 +1342,7 @@ class QBRBuilderAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -1407,7 +1439,7 @@ class AdvocateFinderAgent(Agent):
             ("slack_search_messages", {"query": account, "limit": 5}),
             ("champify_list_job_changes", {"account": account, "days": 90}),
         ]
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -1517,7 +1549,7 @@ class VoiceOfCustomerAgent(Agent):
             ("gong_search_transcripts", {"query": account, "limit": 5}),
             ("zoom_search_transcripts", {"query": account, "limit": 5}),
         ]
-        context, sources, links = _gather(registry, calls, budget)
+        context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
         if memory_text:
             context["memory"] = memory_text
@@ -1923,7 +1955,7 @@ class ValueFinderAgent(Agent):
             ("slack_search_messages", {"query": account, "limit": 5}),
         ]
         context, sources, links, results = _gather_with_results(
-            registry, calls, budget
+            registry, calls, budget, job=job
         )
         context["prior_agent_drafts"] = _prior_drafts(job, account)
         memory_text = _memory_context(job, account, budget)
@@ -2056,7 +2088,7 @@ class SalesforceUpdaterAgent(Agent):
             ("salesforce_list_cases", {"account": account}),
         ]
         context, sources, links, results = _gather_with_results(
-            registry, calls, budget
+            registry, calls, budget, job=job
         )
         context["prior_agent_drafts"] = _prior_drafts(
             job,

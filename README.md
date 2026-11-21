@@ -255,6 +255,62 @@ to move it), human-editable, same file-backed pattern as the approval
 queue and memory. The daemon reloads it every cycle, so edits take
 effect without a restart.
 
+## MCP client
+
+Until v1.5.0 the harness only called its own connector tools
+in-process; the MCP servers in `connectors/` were standalone, for
+other clients to call. The MCP client turns that around: it connects
+to MCP servers the user already runs, over stdio or SSE, and
+registers their tools in the registry alongside the built-ins. That
+is the multiplier: instead of building connectors one by one, Belay
+can use any MCP server the user already has connected.
+
+Servers live in one JSON file (`mcp-servers.json`,
+`HARNESS_MCP_SERVERS_FILE` to move it), human-editable, same
+file-backed pattern as schedules and memory. A missing file means no
+external servers.
+
+```bash
+# A stdio server: the harness's own Gmail server, as an external server.
+python -m harness.run mcp-servers add --name gmail --stdio "python -m connectors.gmail.server" --read-only
+
+# An SSE server.
+python -m harness.run mcp-servers add --name docs --sse https://example.com/mcp
+
+# List servers and their live status (tool count, or why unreachable).
+python -m harness.run mcp-servers list
+python -m harness.run mcp-servers remove gmail
+```
+
+External tools are namespaced by server (`gmail.gmail_search_messages`),
+so a tool name can never collide with a built-in tool or with the same
+tool from another server. Tool selection is by description: the job
+text is scored against each external tool's name and description with
+the same whole-word matching the router uses for agents, and only the
+matching tools are called, with arguments filled from the job (the
+account for account-like parameters, the account or job text for
+search-like ones). A tool whose required arguments the job cannot fill
+is skipped, never guessed.
+
+Adapters: where an external tool's shape does not fit the harness, an
+explicit adapter wraps it summary-first. Adapters are registered by
+bare tool name (`register_adapter` in `harness/mcp_client.py`). The
+shipped example adapts `gmail_search_messages`: it keeps only the
+summary keys, caps matches at 5, and truncates excerpts to 200 chars,
+so a full message body can never reach a prompt through that tool.
+
+Safety: an external tool is a write tool unless its MCP annotations
+declare `readOnlyHint=true`. A write tool is never selected for
+gathering; it only ever runs through the approval-gated write-back
+path, same as a built-in write tool. A server can also assert
+read-only in its config (`--read-only`): the user states every tool
+on that server only reads, which is how servers whose tools carry no
+annotations become usable for gathering. The assertion is the user's
+word, not a check, so assert it only for servers known to be
+read-only. A server that fails to connect is reported and skipped,
+never fatal. Connections are per call: each tool call opens a fresh
+session, calls the tool, and closes it.
+
 ## Dashboard
 
 The dashboard is the UI the CSM operates from. It reads the live
@@ -285,7 +341,7 @@ agent candidates below.
 | memory | v1.2.0 (shipped) | Persistent memory across runs: past drafts, decisions, and corrections per account, injected as context next run, bounded by the token budget. Capture in the approval queue; edits store the correction itself. Local only, never crosses accounts. |
 | write-back | v1.3.0 (shipped) | The first write tools plus approval-gated execution. The Salesforce updater agent drafts field changes, activity logs, and stage moves; only an approved write draft executes, exactly once per change. |
 | scheduling | v1.4.0 (shipped) | A daemon that runs the harness on its own, so watch agents actually watch: file-backed schedules (daily/weekly, named timezone), a run-once mode for system cron, a single-instance daemon, scheduled runs draft into the approval queue only. |
-| MCP client | v1.5.0 | A harness-side MCP client that picks up MCP servers the user already has connected. |
+| MCP client | v1.5.0 (shipped) | A harness-side MCP client that picks up MCP servers the user already has connected: stdio and SSE, namespaced tools, selection by description, adapters, write-flag safety. |
 
 ## Planned agents
 
@@ -328,13 +384,14 @@ python -m connectors.linear.server
 python -m connectors.champify.server
 ```
 
-Calling the MCP servers from the harness via an MCP client (instead of
-in-process) is a v1.5.0 item. The tool functions are already written once
-and shared, so the cutover is a client, not a rewrite.
+The MCP servers are also callable from the harness via an MCP client
+(v1.5.0): external servers connect over stdio or SSE and their tools
+register in the registry, namespaced by server, alongside the
+in-process connector tools.
 
 ## What is real vs scaffolded (v1.0.0 honesty)
 
-**Real, tested (353 unit tests, all passing):**
+**Real, tested (396 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
@@ -357,6 +414,11 @@ and shared, so the cutover is a client, not a rewrite.
   a run-once mode for system cron, and a single-instance daemon.
   Scheduled runs draft into the approval queue only; a failed run is
   logged on its schedule and never blocks the next job.
+- MCP client: stdio and SSE servers connect over the real MCP
+  protocol and their tools register namespaced by server; tools are
+  selected by description and called with arguments filled from the
+  job; a server that fails to connect is reported and skipped; write
+  tools are never gathered, only approval-gated execution runs them.
 - The dashboard (v0.8.0): local FastAPI server reading the live queue
   file. Stat strip, approval queue with completeness checks, source
   links, and working approve/reject, source status, agent last-run
@@ -384,15 +446,11 @@ and shared, so the cutover is a client, not a rewrite.
   available.
 
 **Scaffolded / planned, not built:**
-- v1.0.0, the CLI complete, shipped after value-finder (v0.9.0).
-- Architecture pieces, planned: composition, memory, write-back,
-  scheduling, MCP client. They ship first as minor releases in the v1
-  line (v1.1.0–v1.5.0).
+- Architecture pieces, shipped: composition (v1.1.0), memory (v1.2.0),
+  write-back (v1.3.0), scheduling (v1.4.0), MCP client (v1.5.0).
 - New agents, planned: risk-watcher, escalation-manager,
   competitive-defense, stakeholder-mapper, case-triage. They ship as minor
   releases in the v1 line (v1.6.0–v1.10.0).
-- The MCP client inside the harness (v1.5.0). Until then, v1 calls
-  connector tools in-process; the MCP servers are standalone.
 
 ## Adding a connector
 

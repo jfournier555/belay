@@ -12,6 +12,10 @@ Public surface:
 - ApprovalQueue: file-backed human review queue (approvals.py).
 - AccountMemory: per-account memory across runs (memory.py).
 - ScheduleStore: scheduled jobs, file-backed (scheduler.py).
+- MCPServerStore: external MCP servers, file-backed (mcp_client.py).
+- MCPClient: speaks MCP to an external server, stdio or SSE.
+- load_external_tools: register an external server's tools in the
+  registry, namespaced by server (mcp_client.py).
 - AGENTS: the ten specialist agents, all implemented (agents.py).
 - TokenBudget: per-job token budget enforcement (summarizer.py).
 """
@@ -22,6 +26,16 @@ from .agents import AGENTS, Agent, Draft
 from .approvals import ApprovalItem, ApprovalQueue
 from .config import Config
 from .llm import LLMClient, OpenAICompatibleLLM, StubLLM, get_llm
+from .mcp_client import (
+    MCPClient,
+    MCPServerConfig,
+    MCPServerStore,
+    build_external_calls,
+    is_external_tool,
+    load_external_tools,
+    register_adapter,
+    select_external_tools,
+)
 from .memory import AccountMemory, MemoryRecord
 from .registry import Tool, ToolRegistry
 from .router import RouteResult, Router
@@ -45,6 +59,9 @@ __all__ = [
     "Config",
     "Draft",
     "LLMClient",
+    "MCPClient",
+    "MCPServerConfig",
+    "MCPServerStore",
     "MemoryRecord",
     "OpenAICompatibleLLM",
     "RouteResult",
@@ -57,11 +74,16 @@ __all__ = [
     "TokenBudget",
     "Tool",
     "ToolRegistry",
+    "build_external_calls",
     "estimate_tokens",
     "get_llm",
     "is_due",
+    "is_external_tool",
+    "load_external_tools",
     "next_run_after",
+    "register_adapter",
     "run_due",
+    "select_external_tools",
 ]
 
-__version__ = "1.4.0"
+__version__ = "1.5.0"

@@ -21,6 +21,10 @@ Usage:
     python -m harness.run schedules remove <id>
     python -m harness.run scheduler --once
     python -m harness.run scheduler
+    python -m harness.run mcp-servers list
+    python -m harness.run mcp-servers add --name gmail --stdio "python -m connectors.gmail.server"
+    python -m harness.run mcp-servers add --name docs --sse https://example.com/mcp
+    python -m harness.run mcp-servers remove gmail
     python -m harness.run dashboard [--port 8000]
 
 The `run` command routes the job, runs the agent, and submits the draft to
@@ -49,6 +53,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 import threading
 from dataclasses import replace
@@ -82,6 +87,11 @@ from harness.scheduler import (
     run_due,
     scheduler_lock,
 )
+from harness.mcp_client import (
+    MCPClient,
+    MCPServerStore,
+    load_external_tools,
+)
 from harness.writeback import (
     execute_writes,
     format_write_plan,
@@ -91,12 +101,19 @@ from harness.writeback import (
 
 def build_registry(config: Config) -> ToolRegistry:
     """Register the connector tools (Salesforce + Slack + Gong + HubSpot
-    + Gmail + Zoom + Zendesk + Linear + Champify).
+    + Gmail + Zoom + Zendesk + Linear + Champify), then the external
+    MCP servers the user has configured (v1.5.0).
 
     The CRM the agents gather from is Salesforce unless HubSpot is
     configured and Salesforce is not; then it is HubSpot. When both are
     configured, Salesforce wins. A registry built without a config
     defaults to Salesforce.
+
+    External servers load from the server store file
+    (HARNESS_MCP_SERVERS_FILE, default mcp-servers.json). A missing
+    file means no external servers, so the demo and the tests pay
+    nothing. A configured server that fails to connect is reported on
+    stderr and skipped; it never breaks the registry build.
     """
     crm = (
         "hubspot"
@@ -122,6 +139,18 @@ def build_registry(config: Config) -> ToolRegistry:
         registry.register(tool)
     for tool in champify_tools(config):
         registry.register(tool)
+    try:
+        store = MCPServerStore(config.mcp_servers_file)
+        report = load_external_tools(registry, store)
+    except Exception as exc:  # noqa: BLE001 - a bad store never breaks runs
+        print("MCP servers: could not load %s: %s" % (config.mcp_servers_file, exc), file=sys.stderr)
+        return registry
+    for failure in report["failures"]:
+        print(
+            "MCP server %r unreachable, skipped: %s"
+            % (failure["server"], failure["error"]),
+            file=sys.stderr,
+        )
     return registry
 
 
@@ -562,6 +591,85 @@ def cmd_scheduler(args: argparse.Namespace) -> int:
     )
 
 
+def cmd_mcp_servers(args: argparse.Namespace) -> int:
+    """List, add, or remove external MCP servers (v1.5.0).
+
+    list connects to each configured server and reports its tools, or
+    the reason it could not be reached. A server that fails to connect
+    is reported and skipped, never fatal. add stores a stdio server
+    (--stdio "command args...") or an SSE server (--sse <url>); --env
+    KEY=VALUE and --header "KEY: VALUE" are repeatable."""
+    config = Config.from_env()
+    store = MCPServerStore(config.mcp_servers_file)
+    if args.action == "list":
+        servers = store.list()
+        if not servers:
+            print(
+                "No MCP servers configured. Add one with: python -m "
+                "harness.run mcp-servers add --name gmail --stdio "
+                "\"python -m connectors.gmail.server\""
+            )
+            return 0
+        for server in servers:
+            try:
+                tools = MCPClient(server).list_tools_sync()
+                print(
+                    "%s  ok (%d tool(s): %s)"
+                    % (
+                        server.describe(),
+                        len(tools),
+                        ", ".join(t["name"] for t in tools) or "none",
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                print("%s  unreachable: %s" % (server.describe(), exc))
+        return 0
+    if args.action == "add":
+        data: dict = {"name": args.name}
+        if args.stdio:
+            parts = shlex.split(args.stdio)
+            data["transport"] = "stdio"
+            data["command"] = parts[0] if parts else ""
+            data["args"] = parts[1:]
+        elif args.sse:
+            data["transport"] = "sse"
+            data["url"] = args.sse
+        env: dict = {}
+        for raw in args.env or []:
+            if "=" not in raw:
+                print("--env needs KEY=VALUE form, got %r." % raw, file=sys.stderr)
+                return 2
+            key, _, value = raw.partition("=")
+            env[key] = value
+        data["env"] = env
+        headers: dict = {}
+        for raw in args.header or []:
+            if ":" not in raw:
+                print('--header needs "KEY: VALUE" form, got %r.' % raw, file=sys.stderr)
+                return 2
+            key, _, value = raw.partition(":")
+            headers[key.strip()] = value.strip()
+        data["headers"] = headers
+        data["read_only"] = bool(args.read_only)
+        if args.cwd:
+            data["cwd"] = args.cwd
+        try:
+            server = store.add(data)
+        except ValueError as exc:
+            print("Bad server: %s" % exc, file=sys.stderr)
+            return 2
+        print("MCP server added: %s" % server.describe())
+        return 0
+    if args.action == "remove":
+        if store.remove(args.server_name):
+            print("Removed MCP server %s." % args.server_name)
+            return 0
+        print("Unknown MCP server: %s" % args.server_name, file=sys.stderr)
+        return 1
+    print("Unknown mcp-servers action: %s" % args.action, file=sys.stderr)
+    return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cs-harness",
@@ -629,6 +737,18 @@ def build_parser() -> argparse.ArgumentParser:
     dash_p = sub.add_parser("dashboard", help="Serve the dashboard on localhost.")
     dash_p.add_argument("--port", type=int, default=8000)
     dash_p.set_defaults(func=cmd_dashboard)
+
+    mcp_p = sub.add_parser("mcp-servers", help="List, add, or remove external MCP servers.")
+    mcp_p.add_argument("action", choices=["list", "add", "remove"])
+    mcp_p.add_argument("server_name", nargs="?", help="Server name, for remove.")
+    mcp_p.add_argument("--name", help="Server name, for add. One word: letters, digits, dashes, underscores.")
+    mcp_p.add_argument("--stdio", help="Stdio server command line, e.g. \"python -m connectors.gmail.server\".")
+    mcp_p.add_argument("--sse", help="SSE server URL, e.g. https://example.com/mcp.")
+    mcp_p.add_argument("--env", action="append", default=None, help="Environment addition KEY=VALUE for a stdio server, repeatable.")
+    mcp_p.add_argument("--header", action="append", default=None, help='Header "KEY: VALUE" for an SSE server, repeatable.')
+    mcp_p.add_argument("--read-only", action="store_true", help="Assert every tool on this server only reads. Only set for servers known to be read-only: it lets their tools run during gathering.")
+    mcp_p.add_argument("--cwd", help="Working directory for a stdio server.")
+    mcp_p.set_defaults(func=cmd_mcp_servers)
     return parser
 
 
@@ -645,6 +765,12 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("schedules add needs --agent, --account, --cadence, and --time.")
     if args.command == "schedules" and args.action == "remove" and not args.schedule_id:
         parser.error("schedules remove needs a schedule id.")
+    if args.command == "mcp-servers" and args.action == "add" and not (
+        args.name and (args.stdio or args.sse) and not (args.stdio and args.sse)
+    ):
+        parser.error("mcp-servers add needs --name and exactly one of --stdio or --sse.")
+    if args.command == "mcp-servers" and args.action == "remove" and not args.server_name:
+        parser.error("mcp-servers remove needs a server name.")
     return args.func(args)
 
 

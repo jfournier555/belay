@@ -64,6 +64,12 @@ Environment variables:
                              Default: schedules.json (in the working
                              dir). One object per schedule: agent,
                              account, cadence, time, timezone.
+    HARNESS_MCP_SERVERS_FILE Path to the external MCP server JSON file
+                             (v1.5.0). Default: mcp-servers.json (in
+                             the working dir). One object per server:
+                             name, transport (stdio or sse), command
+                             and args, or url. A missing file means no
+                             external servers.
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
     HARNESS_LOADED_HOURLY_RATE
                              Loaded hourly rate in dollars, used by
@@ -125,6 +131,7 @@ class Config:
     approvals_file: str = "approvals.json"
     memory_file: str = "memory.json"
     schedules_file: str = "schedules.json"
+    mcp_servers_file: str = "mcp-servers.json"
     token_budget_per_job: int = 8000
     loaded_hourly_rate: float | None = None
 
@@ -173,6 +180,9 @@ class Config:
             memory_file=os.environ.get("HARNESS_MEMORY_FILE", "memory.json"),
             schedules_file=os.environ.get(
                 "HARNESS_SCHEDULES_FILE", "schedules.json"
+            ),
+            mcp_servers_file=os.environ.get(
+                "HARNESS_MCP_SERVERS_FILE", "mcp-servers.json"
             ),
             token_budget_per_job=int(
                 os.environ.get("HARNESS_TOKEN_BUDGET", "8000")

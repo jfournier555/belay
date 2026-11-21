@@ -11,13 +11,13 @@ result through the summarizer before returning it. The agent only ever sees
 the summary. That is the low-token-use contract, enforced here, not left to
 each agent to remember.
 
-MCP note (v1 scope): the connectors in connectors/ are real MCP servers
+MCP note (v1.5.0): the connectors in connectors/ are real MCP servers
 (FastMCP) exposing the same tool functions. In v1 the harness calls the
 tool functions in-process, through this registry, so the demo runs without
-spawning subprocesses. Calling the MCP servers over stdio/SSE from the
-harness, via an MCP client, is a phase-2 item: the tool functions are
-already written once and shared between the in-process registry and the
-MCP server wrapper, so the cutover is a client, not a rewrite.
+spawning subprocesses. The harness-side MCP client (harness/mcp_client.py)
+also speaks MCP over stdio/SSE to servers the user already runs, and
+registers their tools here, namespaced by server, so an external tool is
+just another registry tool with the same summary-first contract.
 """
 
 from __future__ import annotations

@@ -579,8 +579,8 @@ class TestSafetyAndCli(_EnvCase):
         self.assertIn("schedules", out.getvalue())
         self.assertIn("scheduler", out.getvalue())
 
-    def test_version_still_1_4_0(self):
-        self.assertEqual(__version__, "1.4.0")
+    def test_version_still_1_5_0(self):
+        self.assertEqual(__version__, "1.5.0")
 
 
 if __name__ == "__main__":
