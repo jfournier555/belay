@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v1.12.0**, 15 agents, 9 connectors, 577 tests green.
+**A post sales AI harness.** Current version: **v1.13.0**, 15 agents, 9 connectors, 588 tests green.
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -10,15 +10,34 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 
 ## First run
 
+One command, from clone to a running harness:
+
 ```bash
 git clone https://github.com/jfournier555/belay.git
 cd belay
+bash bootstrap.sh
+```
+
+That creates `.venv`, installs the dependencies, installs Belay, copies `.env.example` to `.env` when `.env` is missing, prints one line about Ollama, then launches the first-run wizard. Re-running it is safe: an existing `.venv` is reused and an existing `.env` is left alone. It never asks you to activate anything, so it works the same from bash, zsh, and fish.
+
+Windows:
+
+```powershell
+.\bootstrap.ps1
+```
+
+If the execution policy blocks it, run `powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1`. The script mirrors the same steps. It has not been run on Windows yet (the build machine is Linux); the manual steps below are the fallback if it fails.
+
+Manual install, if the script is not for you:
+
+```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/pip install -e .
+cp .env.example .env
 ```
 
-Python 3.11 or newer. The commands below call the venv binaries directly (`.venv/bin/python`), so they work in bash, zsh, and fish alike with no activation step. If you prefer to activate the venv, use `source .venv/bin/activate` in bash/zsh or `source .venv/bin/activate.fish` in fish; plain `python` then works, but the bare `activate` script is bash syntax and fails in fish.
+Python 3.11 or newer; without it the script prints one line telling you what to install, not a traceback. The commands above call the venv binaries directly (`.venv/bin/python`), so they work in bash, zsh, and fish alike with no activation step. If you prefer to activate the venv, use `source .venv/bin/activate` in bash/zsh or `source .venv/bin/activate.fish` in fish; plain `python` then works, but the bare `activate` script is bash syntax and fails in fish.
 
 Then run the first-run wizard. It asks one question with two answers:
 
