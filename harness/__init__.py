@@ -2,7 +2,7 @@
 
 The harness is everything around the model (routing, tools, memory,
 approvals). The model is the engine, the harness is the chassis, and the
-dashboard (phase 2) is what the CSM operates from.
+dashboard (v0.8.0) is what the CSM operates from.
 
 Public surface:
 - Config: environment-based configuration (config.py).
@@ -43,4 +43,4 @@ __all__ = [
     "get_llm",
 ]
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"

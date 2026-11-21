@@ -10,6 +10,7 @@ Usage:
     python -m harness.run approvals show <id>
     python -m harness.run approvals approve <id> [--note "..."]
     python -m harness.run approvals reject <id> [--note "..."]
+    python -m harness.run dashboard [--port 8000]
 
 The `run` command routes the job, runs the agent, and submits the draft to
 the approval queue. Nothing is sent anywhere. A human approves it with
@@ -47,6 +48,13 @@ def build_registry(config: Config) -> ToolRegistry:
     for tool in slack_tools(config):
         registry.register(tool)
     return registry
+
+
+def cmd_dashboard(args: argparse.Namespace) -> int:
+    """Serve the dashboard on localhost (reads the live approval queue)."""
+    from harness.dashboard import main as dashboard_main
+
+    return dashboard_main(["--port", str(args.port)])
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -202,6 +210,10 @@ def build_parser() -> argparse.ArgumentParser:
     appr_p.add_argument("item_id", nargs="?", help="Approval item id.")
     appr_p.add_argument("--note", help="Note to attach to the decision.")
     appr_p.set_defaults(func=cmd_approvals)
+
+    dash_p = sub.add_parser("dashboard", help="Serve the dashboard on localhost.")
+    dash_p.add_argument("--port", type=int, default=8000)
+    dash_p.set_defaults(func=cmd_dashboard)
     return parser
 
 

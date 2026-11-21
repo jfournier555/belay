@@ -4,7 +4,7 @@
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
-Post-sales is a hard climb. Every account is a steep peak: the renewal, the expansion, proving the value is real. The reps climbing them are doing it with a full book and no rope. Belay is the rope and the harness. It is everything around the model: routing, tools, memory, approvals. The model is the engine, Belay is the chassis, and the dashboard (phase 2) is what post sales teams operate from. It keeps you from falling while you climb,
+Post-sales is a hard climb. Every account is a steep peak: the renewal, the expansion, proving the value is real. The reps climbing them are doing it with a full book and no rope. Belay is the rope and the harness. It is everything around the model: routing, tools, memory, approvals. The model is the engine, Belay is the chassis, and the dashboard is what post sales teams operate from. It keeps you from falling while you climb,
 
 Belay is the sequel to ["AI is taking the admin. The judgment is the job."](https://jfournier.net/articles/ai-admin-judgment/): the article's "the wiring is the job" productized.
 
@@ -32,18 +32,21 @@ Three rules, enforced in code:
    stops one bad tool call from blowing up the context window.
 3. **A human reads the draft, not the whole thread.** No agent output is
    sent, posted, or acted on directly. Every draft goes to the approval
-   queue first.
+   queue first. Nothing writes back to Salesforce until a human approves
+   it. The queue gates writes as well as sends; no live agent writes
+   back today, and write-back (v1.3.0) is approval-gated by design.
 
 ## Proof checklist
 
-Every agent defines what "done" looks like as a short checklist: the
-evidence its draft must contain, as required sources gathered and key
-points covered. After drafting, the agent self-checks its own output
-against the checklist before the draft reaches the approval queue. The
-results ride along in the draft metadata and show up in
-`approvals show`, so the human reviewer sees them. A failed item is a
-flag, never a block: the draft still goes to the queue either way, and
-human approval remains the final gate.
+Each agent self-checks its draft against a proof checklist before it
+reaches the queue. Every agent defines what "done" looks like as a short
+checklist: the evidence its draft must contain, as required sources
+gathered and key points covered. After drafting, the agent self-checks
+its own output against the checklist before the draft reaches the
+approval queue. The results ride along in the draft metadata and show
+up in `approvals show`, so the human reviewer sees them. A failed item
+is a flag, never a block: the draft still goes to the queue either way,
+and human approval remains the final gate.
 
 ## Quick start
 
@@ -87,6 +90,9 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 
 ## The eight agents
 
+Each agent owns one job, not a schedule. Cadence is the scheduler
+(v1.4.0), a separate architecture piece.
+
 | Agent | Status | What it does |
 |---|---|---|
 | renewal-desk | implemented | Drafts a renewal plan: health, risks, next steps. |
@@ -98,6 +104,24 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp"
 | advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it, how much influence each carries. |
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
 
+## Dashboard
+
+The dashboard is the UI the CSM operates from. It reads the live
+approval queue file and shows the numbers from real harness state:
+accounts watched, at-risk drafts, drafts ready, advocates found, the
+approval queue with each draft's proof checklist score, source status,
+agent last-run state, the event log, and the token budget. When the
+queue is empty it says so; no number is ever invented. Everything is a
+draft until I say send.
+
+```bash
+python -m harness.run dashboard
+# or: python -m harness.dashboard
+```
+
+Then open http://127.0.0.1:8000. Local-only, localhost, no auth. Approve
+and reject buttons call the same approval queue the CLI uses.
+
 ## Planned architecture (v1.x)
 
 Architecture first, then agents. These ship as minor releases before the
@@ -105,6 +129,7 @@ agent candidates below.
 
 | Piece | Target | What it will do |
 |---|---|---|
+| dashboard | v0.8.0 (shipped) | Local web UI over the live approval queue: stat strip, queue with proof scores and approve/reject, sources, agents, event log, token budget. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision. |
 | composition | v1.1.0 | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts. |
 | memory | v1.2.0 | Persistent memory across runs: past drafts, decisions, and corrections per account. |
 | write-back | v1.3.0 | The first write tools plus approval-gated execution. The Salesforce updater agent is the first use. |
@@ -115,7 +140,7 @@ agent candidates below.
 
 | Agent | Target | What it will do |
 |---|---|---|
-| value-finder | v0.8.0 | Finds realized and unrealized value in money or time: what is delivered, what is not yet captured. |
+| value-finder | v0.9.0 | Finds realized and unrealized value in money or time: what is delivered, what is not yet captured. |
 | risk-watcher | v1.6.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. When a champion leaves, it asks whether the org mandate changed. |
 | escalation-manager | v1.7.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
 | competitive-defense | v1.8.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
@@ -144,9 +169,9 @@ Calling the MCP servers from the harness via an MCP client (instead of
 in-process) is a v1.5.0 item. The tool functions are already written once
 and shared, so the cutover is a client, not a rewrite.
 
-## What is real vs scaffolded (v0.7 honesty)
+## What is real vs scaffolded (v0.8 honesty)
 
-**Real, tested (59 unit tests, all passing):**
+**Real, tested (76 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
@@ -159,6 +184,11 @@ and shared, so the cutover is a client, not a rewrite.
 - Salesforce and Slack MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
+- The dashboard (v0.8.0): local FastAPI server reading the live queue
+  file. Stat strip, approval queue with proof scores and working
+  approve/reject, source status, agent last-run state, event log, token
+  budget. Every number comes from harness state; an empty queue renders
+  an honest empty state.
 
 **Written, not verified against a live system:**
 - The live Salesforce REST/SOQL calls and the live Slack Web API calls.
@@ -169,18 +199,15 @@ and shared, so the cutover is a client, not a rewrite.
   in the demo and the tests.
 
 **Scaffolded / planned, not built:**
-- value-finder (v0.8.0): realized and unrealized value in money or time.
+- value-finder (v0.9.0): realized and unrealized value in money or time.
   Then v1.0.0, the CLI complete.
 - Architecture pieces, planned: composition, memory, write-back,
   scheduling, MCP client. They ship first as minor releases in the v1
   line (v1.1.0–v1.5.0).
 - New agents, planned: risk-watcher, escalation-manager,
   competitive-defense, stakeholder-mapper, case-triage. They ship as minor
-  releases in the v1 line (v1.6.0–v1.10.0). The dashboard UI is v2.0.0.
+  releases in the v1 line (v1.6.0–v1.10.0).
 - The Gong connector (see `connectors/gong/README.md`).
-- The dashboard (phase 2). V1 is the harness + connectors + approval
-  queue. The dashboard is the UI the CSM operates from, and it needs
-  hosting or a local app. It is not in this repo yet.
 - The MCP client inside the harness (v1.5.0). Until then, v1 calls
   connector tools in-process; the MCP servers are standalone.
 

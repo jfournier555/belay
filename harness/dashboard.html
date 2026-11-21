@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Belay dashboard</title>
+<style>
+  :root {
+    --bg: #0b0c0e;
+    --panel: #14161a;
+    --panel-2: #1a1d22;
+    --line: #262a31;
+    --text: #e6e9ee;
+    --muted: #9aa3af;
+    --blue: #5b9dff;
+    --blue-dim: #2c4a75;
+    --green: #4ade80;
+    --red: #f87171;
+    --amber: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 14px; line-height: 1.45;
+  }
+  header {
+    padding: 18px 24px 12px; border-bottom: 1px solid var(--line);
+    display: flex; justify-content: space-between; align-items: baseline;
+    flex-wrap: wrap; gap: 8px;
+  }
+  header h1 { margin: 0; font-size: 22px; letter-spacing: .02em; }
+  header h1 span { color: var(--blue); }
+  header .tagline { color: var(--muted); font-size: 13px; }
+  header .version { color: var(--muted); font-size: 12px; }
+  main { padding: 16px 24px 24px; max-width: 1400px; margin: 0 auto; }
+  .stats {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px;
+    margin-bottom: 16px;
+  }
+  .stat {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  .stat .num { font-size: 30px; font-weight: 700; color: var(--blue); line-height: 1.1; }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat .hint { color: var(--muted); font-size: 11px; margin-top: 4px; }
+  .grid {
+    display: grid; gap: 12px;
+    grid-template-columns: 240px 1fr 300px;
+    align-items: start;
+  }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 14px 16px; margin-bottom: 12px;
+  }
+  .card h2 {
+    margin: 0 0 10px; font-size: 13px; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--muted);
+  }
+  .source { padding: 8px 0; border-top: 1px solid var(--line); }
+  .source:first-of-type { border-top: none; }
+  .source .name { font-weight: 600; }
+  .pill {
+    display: inline-block; font-size: 11px; padding: 1px 8px;
+    border-radius: 999px; margin-left: 6px; vertical-align: 1px;
+  }
+  .pill.live { background: #14331f; color: var(--green); }
+  .pill.stub { background: #332e14; color: var(--amber); }
+  .pill.planned { background: #1c2534; color: var(--blue); }
+  .source .detail { color: var(--muted); font-size: 12px; }
+  .agent { padding: 8px 0; border-top: 1px solid var(--line); }
+  .agent:first-of-type { border-top: none; }
+  .agent .name { font-weight: 600; }
+  .agent .desc { color: var(--muted); font-size: 12px; }
+  .agent .meta { color: var(--muted); font-size: 11px; margin-top: 2px; }
+  .queue-item {
+    border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel-2); padding: 14px 16px; margin-bottom: 12px;
+  }
+  .queue-item.decided { opacity: .65; }
+  .queue-item .head {
+    display: flex; justify-content: space-between; gap: 8px;
+    flex-wrap: wrap; margin-bottom: 6px;
+  }
+  .queue-item .agent-name { font-weight: 700; color: var(--blue); }
+  .queue-item .account { color: var(--muted); }
+  .queue-item .when { color: var(--muted); font-size: 12px; }
+  .proof { font-size: 12px; margin: 6px 0; }
+  .proof .pass { color: var(--green); }
+  .proof .fail { color: var(--red); }
+  .proof ul { margin: 4px 0 0 18px; padding: 0; color: var(--muted); }
+  .draft {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 12px; white-space: pre-wrap; font-size: 13px;
+    max-height: 260px; overflow-y: auto; margin: 8px 0;
+  }
+  .sources-line { color: var(--muted); font-size: 12px; }
+  .actions { margin-top: 10px; display: flex; gap: 8px; }
+  button {
+    font: inherit; cursor: pointer; border-radius: 6px; padding: 7px 16px;
+    border: 1px solid var(--blue-dim);
+  }
+  button.approve { background: var(--blue); color: #06121f; font-weight: 600; border-color: var(--blue); }
+  button.reject { background: transparent; color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .empty {
+    border: 1px dashed var(--line); border-radius: 8px; padding: 28px;
+    text-align: center; color: var(--muted);
+  }
+  .bottom { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .event { padding: 6px 0; border-top: 1px solid var(--line); font-size: 13px; }
+  .event:first-of-type { border-top: none; }
+  .event .at { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  .event .kind-approved { color: var(--green); }
+  .event .kind-rejected { color: var(--red); }
+  .event .kind-queued { color: var(--blue); }
+  .token-line { font-size: 13px; padding: 4px 0; }
+  .token-line b { color: var(--blue); }
+  .note { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  @media (max-width: 1000px) {
+    .grid { grid-template-columns: 1fr; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .bottom { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Belay <span>dashboard</span></h1>
+  <div class="tagline">Everything is a draft until I say send.</div>
+  <div class="version" id="version"></div>
+</header>
+<main>
+  <section class="stats" id="stats"></section>
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>Sources</h2>
+        <div id="sources"></div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h2>Approval queue</h2>
+        <div id="queue"></div>
+      </div>
+    </div>
+    <div>
+      <div class="card">
+        <h2>Agents</h2>
+        <div id="agents"></div>
+      </div>
+    </div>
+  </div>
+  <div class="bottom">
+    <div class="card">
+      <h2>Event log</h2>
+      <div id="events"></div>
+    </div>
+    <div class="card">
+      <h2>Token budget</h2>
+      <div id="tokens"></div>
+    </div>
+  </div>
+</main>
+<script>
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+async function loadState() {
+  const res = await fetch("/api/state");
+  const state = await res.json();
+  render(state);
+}
+function render(state) {
+  document.getElementById("version").textContent =
+    "v" + state.version + (state.stub_mode ? " · stub mode" : "");
+  const s = state.stats;
+  document.getElementById("stats").innerHTML = [
+    ["Accounts watched", s.accounts_watched, "distinct accounts in the queue"],
+    ["At-risk flagged", s.at_risk_flagged, "pending renewal-desk drafts"],
+    ["Drafts ready", s.drafts_ready, "pending drafts waiting for review"],
+    ["Advocates found", s.advocates_found, "advocate-finder drafts in the queue"],
+  ].map(([label, num, hint]) =>
+    '<div class="stat"><div class="num">' + num + '</div>' +
+    '<div class="label">' + label + '</div>' +
+    '<div class="hint">' + hint + '</div></div>'
+  ).join("");
+  document.getElementById("sources").innerHTML = state.sources.map(src =>
+    '<div class="source"><span class="name">' + esc(src.name) + '</span>' +
+    '<span class="pill ' + src.status + '">' + src.status + '</span>' +
+    '<div class="detail">' + esc(src.detail) + '</div></div>'
+  ).join("");
+  document.getElementById("agents").innerHTML = state.agents.map(a =>
+    '<div class="agent"><span class="name">' + esc(a.display_name) + '</span>' +
+    '<span class="pill ' + (a.status === "implemented" ? "live" : "planned") + '">' +
+    a.status + '</span>' +
+    '<div class="desc">' + esc(a.description) + '</div>' +
+    '<div class="meta">' + (a.last_run
+      ? "last run " + esc(a.last_run) + " · " + a.drafts + " draft" + (a.drafts === 1 ? "" : "s")
+      : "never run") + '</div></div>'
+  ).join("");
+  const q = document.getElementById("queue");
+  if (!state.queue.length) {
+    q.innerHTML = '<div class="empty">Queue is empty. No drafts waiting.<br>' +
+      'Run a job from the CLI to queue a draft.</div>';
+  } else {
+    q.innerHTML = state.queue.map(item => {
+      const proofItems = item.proof.map(p =>
+        '<li><span class="' + (p.passed ? "pass" : "fail") + '">' +
+        (p.passed ? "PASS" : "FAIL") + '</span> ' + esc(p.label) +
+        (p.passed ? "" : " (" + esc(p.detail || "") + ")") + '</li>'
+      ).join("");
+      const proof = item.proof_total
+        ? '<div class="proof">Proof checklist: <b>' + item.proof_passed + '/' + item.proof_total + ' passed</b>' +
+          (proofItems ? '<ul>' + proofItems + '</ul>' : '') + '</div>'
+        : '<div class="proof">Proof checklist: none recorded for this draft.</div>';
+      const actions = item.status === "pending"
+        ? '<div class="actions">' +
+          '<button class="approve" data-id="' + esc(item.id) + '" data-action="approve">Approve</button>' +
+          '<button class="reject" data-id="' + esc(item.id) + '" data-action="reject">Reject</button>' +
+          '</div>'
+        : '<div class="note">Decided: ' + esc(item.status) +
+          (item.decided_at ? ' · ' + esc(item.decided_at) : '') + '</div>';
+      return '<div class="queue-item' + (item.status === "pending" ? "" : " decided") + '">' +
+        '<div class="head"><span><span class="agent-name">' + esc(item.agent) + '</span>' +
+        ' <span class="account">' + esc(item.account || "") + '</span></span>' +
+        '<span class="when">' + esc(item.created_at) + ' · ' + esc(item.status) + '</span></div>' +
+        proof +
+        '<div class="draft">' + esc(item.draft) + '</div>' +
+        '<div class="sources-line">Sources: ' + esc(item.sources.join(", ") || "none") + '</div>' +
+        actions + '</div>';
+    }).join("");
+    q.querySelectorAll("button[data-action]").forEach(btn => {
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        await fetch("/api/approvals/" + encodeURIComponent(btn.dataset.id) +
+          "/" + btn.dataset.action, { method: "POST" });
+        loadState();
+      });
+    });
+  }
+  const ev = document.getElementById("events");
+  ev.innerHTML = state.events.length
+    ? state.events.map(e =>
+        '<div class="event"><span class="at">' + esc(e.at) + '</span>' +
+        '<span class="kind-' + esc(e.kind) + '">' + esc(e.kind) + '</span> ' +
+        esc(e.text) + '</div>'
+      ).join("")
+    : '<div class="note">No events yet. Queue a draft to start the log.</div>';
+  const t = state.tokens;
+  document.getElementById("tokens").innerHTML =
+    '<div class="token-line">Token budget per job: <b>' + t.budget_per_job + '</b></div>' +
+    '<div class="token-line">Pending drafts: <b>' + t.pending_drafts + '</b></div>' +
+    '<div class="token-line">Estimated tokens in pending drafts: <b>' + t.estimated_tokens_pending + '</b> (computed from draft text)</div>' +
+    '<div class="note">The queue file does not store token counts per draft; ' +
+    'this estimate is computed live from the draft text. The budget is enforced ' +
+    'per job when the agent runs, not as a pool.</div>';
+}
+loadState();
+setInterval(loadState, 30000);
+</script>
+</body>
+</html>
