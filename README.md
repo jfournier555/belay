@@ -15,7 +15,7 @@ Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
   -> Specialist agent (1 of 9, all implemented: the original 8 in v0.7,
      value-finder in v0.9.0)
-  -> Tools (Salesforce + Slack, summary-first results)
+  -> Tools (9 connectors, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
   -> Approval queue (a human approves, rejects, or edits)
@@ -190,13 +190,14 @@ python -m connectors.gmail.server
 python -m connectors.zoom.server
 python -m connectors.zendesk.server
 python -m connectors.linear.server
+python -m connectors.champify.server
 ```
 
 Calling the MCP servers from the harness via an MCP client (instead of
 in-process) is a v1.5.0 item. The tool functions are already written once
 and shared, so the cutover is a client, not a rewrite.
 
-## What is real vs scaffolded (v0.8 honesty)
+## What is real vs scaffolded (v1.0.0 honesty)
 
 **Real, tested (253 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
@@ -236,7 +237,7 @@ and shared, so the cutover is a client, not a rewrite.
   available.
 
 **Scaffolded / planned, not built:**
-- v1.0.0, the CLI complete, follows value-finder (v0.9.0).
+- v1.0.0, the CLI complete, shipped after value-finder (v0.9.0).
 - Architecture pieces, planned: composition, memory, write-back,
   scheduling, MCP client. They ship first as minor releases in the v1
   line (v1.1.0–v1.5.0).

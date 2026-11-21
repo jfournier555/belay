@@ -43,6 +43,7 @@ from harness import (
     Router,
     TokenBudget,
     ToolRegistry,
+    __version__,
     get_llm,
 )
 
@@ -241,6 +242,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cs-harness",
         description="CS agent harness: router + agents + approval queue.",
+    )
+    parser.add_argument(
+        "--version", action="version", version="Belay %s" % __version__
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
