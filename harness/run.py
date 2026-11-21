@@ -116,6 +116,21 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     agent = AGENTS[route.agent]
     print("Routed to %s (%s, %s)." % (agent.display_name, route.agent, route.reason))
+    if route.agent == "value-finder":
+        # Value-finder reads prior drafts from the approval queue and
+        # quantifies time saved from explicit inputs only: the loaded
+        # hourly rate comes from --hourly-rate or
+        # HARNESS_LOADED_HOURLY_RATE, the hours from --hours-saved.
+        # Neither is ever assumed.
+        job["approvals_file"] = config.approvals_file
+        if args.hourly_rate is not None:
+            job["hourly_rate"] = args.hourly_rate
+            job["hourly_rate_source"] = "CLI --hourly-rate"
+        elif config.loaded_hourly_rate is not None:
+            job["hourly_rate"] = config.loaded_hourly_rate
+            job["hourly_rate_source"] = "HARNESS_LOADED_HOURLY_RATE"
+        if args.hours_saved is not None:
+            job["hours_saved"] = args.hours_saved
     budget = TokenBudget(config.token_budget_per_job)
     try:
         draft = agent.run(job, registry, llm, budget)
@@ -151,7 +166,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_agents(_args: argparse.Namespace) -> int:
-    """List the eight agents and whether each is implemented in v1."""
+    """List the nine agents and whether each is implemented in v1."""
     for name in sorted(AGENTS):
         agent = AGENTS[name]
         status = "implemented" if agent.implemented else "planned"
@@ -235,9 +250,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--text", help="Free-text job description.")
     run_p.add_argument("--stub", action="store_true", help="Force stub mode (no creds, no network).")
     run_p.add_argument("--show", action="store_true", help="Print the draft after queueing it.")
+    run_p.add_argument("--hourly-rate", type=float, default=None, help="Loaded hourly rate in dollars, for value-finder (overrides HARNESS_LOADED_HOURLY_RATE).")
+    run_p.add_argument("--hours-saved", type=float, default=None, help="Hours saved by automation, for value-finder (supplied by the CSM; never assumed).")
     run_p.set_defaults(func=cmd_run)
 
-    agents_p = sub.add_parser("agents", help="List the eight agents.")
+    agents_p = sub.add_parser("agents", help="List the nine agents.")
     agents_p.set_defaults(func=cmd_agents)
 
     tools_p = sub.add_parser("tools", help="List registered connector tools.")

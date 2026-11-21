@@ -33,20 +33,6 @@ from .approvals import ApprovalQueue
 from .config import Config
 from .summarizer import estimate_tokens
 
-# value-finder is the 9th agent, planned for v0.9.0. It shows in the
-# dashboard as planned so the agent list is honest about what exists.
-PLANNED_AGENTS = [
-    {
-        "name": "value-finder",
-        "display_name": "Value Finder",
-        "description": (
-            "Finds realized and unrealized value in money or time: what "
-            "is delivered, what is not yet captured."
-        ),
-        "target": "v0.9.0",
-    },
-]
-
 _TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
 
 
@@ -172,7 +158,7 @@ def source_statuses(config: Config) -> list[dict]:
 
 
 def agent_states(queue: ApprovalQueue) -> list[dict]:
-    """Right rail: the 8 agents plus value-finder (planned).
+    """Right rail: the 9 agents.
 
     Last-run state comes from the queue: the newest draft each agent
     produced, and when. An agent with no drafts has never run.
@@ -192,18 +178,6 @@ def agent_states(queue: ApprovalQueue) -> list[dict]:
                 "drafts": len(mine),
                 "last_run": last.created_at if last else None,
                 "last_status": last.status if last else None,
-            }
-        )
-    for planned in PLANNED_AGENTS:
-        states.append(
-            {
-                "name": planned["name"],
-                "display_name": planned["display_name"],
-                "description": planned["description"],
-                "status": "planned (%s)" % planned["target"],
-                "drafts": 0,
-                "last_run": None,
-                "last_status": None,
             }
         )
     return states

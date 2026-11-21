@@ -105,14 +105,15 @@ class TestAgentStates(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_eight_agents_plus_value_finder(self):
+    def test_nine_agents_including_value_finder(self):
         states = agent_states(self.queue)
         self.assertEqual(len(states), 9)
         names = [s["name"] for s in states]
         self.assertIn("value-finder", names)
-        planned = [s for s in states if s["name"] == "value-finder"][0]
-        self.assertEqual(planned["status"], "planned (v0.9.0)")
-        self.assertIsNone(planned["last_run"])
+        finder = [s for s in states if s["name"] == "value-finder"][0]
+        self.assertEqual(finder["status"], "implemented")
+        self.assertEqual(finder["drafts"], 0)
+        self.assertIsNone(finder["last_run"])
 
     def test_last_run_comes_from_the_queue(self):
         states = {s["name"]: s for s in agent_states(self.queue)}

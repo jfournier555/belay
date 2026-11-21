@@ -1,10 +1,10 @@
-"""The specialist agents: the eight post-sales jobs the harness covers.
+"""The specialist agents: the nine post-sales jobs the harness covers.
 
-The eight jobs are the post-sales jobs that matter: scout, briefer,
+The nine jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
-renewal desk, voice-of-customer.
+renewal desk, voice-of-customer, and value-finder.
 
-V1 implements eight end to end:
+V1 implements nine end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -27,8 +27,13 @@ V1 implements eight end to end:
   requests, pain points, sentiment from cases, Slack, Zendesk tickets,
   and Gong call transcripts, and the top themes to take back to the
   product team.
+- value-finder: finds realized and unrealized outcomes in an account,
+  quantified in money or time (=money): time saved, revenue protected
+  or expanded, gaps not yet captured. Every dollar figure is labeled
+  measured or modeled with its basis, and the figures are computed by
+  the harness, never by the model.
 
-All eight are implemented. Every job in the harness has a working agent.
+All nine are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -50,8 +55,10 @@ Every agent follows the same contract:
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
+from .approvals import ApprovalQueue
 from .llm import LLMClient
 from .registry import ToolRegistry
 from .summarizer import TokenBudget, estimate_tokens
@@ -85,7 +92,9 @@ class ProofItem:
     """One item on an agent's proof checklist: what "done" looks like.
 
     Each item names the evidence it needs. `keywords` must appear in the
-    draft text (case-insensitive); `sources` must be among the tools the
+    draft text (case-insensitive); `any_keywords` passes when at least
+    one of them appears (for a label that takes one of two forms, such
+    as measured or modeled); `sources` must be among the tools the
     agent successfully called; `requires_links` means the draft must
     carry at least one source link. An item with none of these is a
     manual check the human reviewer confirms by reading the draft.
@@ -93,6 +102,7 @@ class ProofItem:
 
     label: str
     keywords: list[str] = field(default_factory=list)
+    any_keywords: list[str] = field(default_factory=list)
     sources: list[str] = field(default_factory=list)
     requires_links: bool = False
 
@@ -103,6 +113,12 @@ class ProofItem:
         for keyword in self.keywords:
             if keyword.lower() not in text:
                 missing.append("draft does not mention %r" % keyword)
+        if self.any_keywords and not any(
+            keyword.lower() in text for keyword in self.any_keywords
+        ):
+            missing.append(
+                "draft mentions none of %r" % (self.any_keywords,)
+            )
         for source in self.sources:
             if source not in draft.sources:
                 missing.append("source %r was not gathered" % source)
@@ -615,19 +631,23 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
     return links
 
 
-def _gather(
+def _gather_with_results(
     registry: ToolRegistry, calls: list[tuple[str, dict]], budget: TokenBudget
-) -> tuple[dict, list[str], list[dict]]:
+) -> tuple[dict, list[str], list[dict], dict]:
     """Call tools in order, respecting the token budget. Returns
     (context dict, list of tool names successfully called, list of
-    source links built from the tool results). A tool that would blow
-    the budget is skipped, and the skip is recorded in context. Links
-    are collected only from calls that succeeded within budget, and
-    deduplicated by URL.
+    source links built from the tool results, raw tool results by name).
+    A tool that would blow the budget is skipped, and the skip is
+    recorded in context. Links are collected only from calls that
+    succeeded within budget, and deduplicated by URL. The raw results
+    are for the agent to compute figures from the records (amounts,
+    stages) instead of parsing the rendered context; they never reach
+    the prompt.
     """
     context: dict = {}
     sources: list[str] = []
     links: list[dict] = []
+    results: dict = {}
     seen_urls: set[str] = set()
     for tool_name, kwargs in calls:
         try:
@@ -641,10 +661,27 @@ def _gather(
             continue
         context[tool_name] = rendered
         sources.append(tool_name)
+        results[tool_name] = result
         for link in extract_links(tool_name, result):
             if link["url"] not in seen_urls:
                 seen_urls.add(link["url"])
                 links.append(link)
+    return context, sources, links, results
+
+
+def _gather(
+    registry: ToolRegistry, calls: list[tuple[str, dict]], budget: TokenBudget
+) -> tuple[dict, list[str], list[dict]]:
+    """Call tools in order, respecting the token budget. Returns
+    (context dict, list of tool names successfully called, list of
+    source links built from the tool results). A tool that would blow
+    the budget is skipped, and the skip is recorded in context. Links
+    are collected only from calls that succeeded within budget, and
+    deduplicated by URL.
+    """
+    context, sources, links, _results = _gather_with_results(
+        registry, calls, budget
+    )
     return context, sources, links
 
 
@@ -1404,8 +1441,350 @@ class VoiceOfCustomerAgent(Agent):
         )
 
 
+def format_money(amount: float) -> str:
+    """Format a dollar amount: $1,500, or $1,500.50 when it has cents."""
+    if float(amount) == int(amount):
+        return "$%s" % format(int(amount), ",")
+    return "$%s" % format(amount, ",.2f")
+
+
+def quantify_time_savings(hours: float, hourly_rate: float) -> float:
+    """Hours saved x loaded hourly rate = dollars. Pure arithmetic; the
+    caller decides whether the inputs have a basis."""
+    return float(hours) * float(hourly_rate)
+
+
+def _value_figures(
+    opportunities: dict | None,
+    hours_saved: float | None,
+    hourly_rate: float | None,
+    rate_source: str,
+) -> str:
+    """Build the quantified figures block for a value report.
+
+    Every dollar figure is computed here from the gathered records or
+    from explicit job inputs, never by the model, and every line labels
+    the figure measured or modeled with its basis. A figure with no
+    basis is stated as absent, never invented.
+
+    - Realized, measured: closed-won opportunity amounts.
+    - Realized, modeled: hours saved x loaded hourly rate.
+    - Unrealized, measured: open opportunity amounts (expansion not yet
+      captured, renewal not yet secured).
+    - Unrealized, modeled: none stated; the job carries hours already
+      saved, not hours still to save, so there is no basis for one.
+    `opportunities` is the raw result dict from the opportunities tool,
+    or None when that call did not run. `hours_saved` is the hours the
+    CSM supplied with the job, or None. `hourly_rate` is the loaded
+    rate from the job or the environment, or None; `rate_source` names
+    where it came from.
+    """
+    if hours_saved is not None and hours_saved <= 0:
+        hours_saved = None
+    if hourly_rate is not None and hourly_rate <= 0:
+        hourly_rate = None
+    lines = ["Quantified figures (harness-computed, not model prose):"]
+    if opportunities is None:
+        realized_measured = 0.0
+        unrealized_measured = 0.0
+        lines.append(
+            "- Realized (measured): not gathered, the opportunities "
+            "call did not run, so no measured figure is stated."
+        )
+        lines.append(
+            "- Unrealized (measured): not gathered, the opportunities "
+            "call did not run, so no measured figure is stated."
+        )
+    else:
+        opps = opportunities.get("opportunities", []) or []
+        priced = [
+            opp
+            for opp in opps
+            if isinstance(opp.get("amount"), (int, float))
+        ]
+        realized = [
+            opp
+            for opp in priced
+            if str(opp.get("stage", "")).lower() == "closed won"
+        ]
+        open_opps = [opp for opp in priced if opp not in realized]
+        realized_measured = sum(opp["amount"] for opp in realized)
+        unrealized_measured = sum(opp["amount"] for opp in open_opps)
+        if realized:
+            lines.append(
+                "- Realized (measured): %s, sum of %d closed-won "
+                "opportunity amount(s) from the gathered records."
+                % (format_money(realized_measured), len(realized))
+            )
+        else:
+            lines.append(
+                "- Realized (measured): $0, no closed-won revenue in "
+                "the gathered opportunity records."
+            )
+        if open_opps:
+            parts = [
+                "%s %s"
+                % (
+                    format_money(opp["amount"]),
+                    opp.get("type", "opportunity"),
+                )
+                for opp in open_opps
+            ]
+            lines.append(
+                "- Unrealized (measured): %s, %s, from the gathered "
+                "opportunity records (open, not yet captured)."
+                % (format_money(unrealized_measured), "; ".join(parts))
+            )
+        else:
+            lines.append(
+                "- Unrealized (measured): $0, no open opportunities in "
+                "the gathered records."
+            )
+    realized_modeled = 0.0
+    if hours_saved is not None and hourly_rate is not None:
+        realized_modeled = quantify_time_savings(hours_saved, hourly_rate)
+        lines.append(
+            "- Realized (modeled): %s, %s hours saved x %s/hour loaded "
+            "rate (hours supplied with the job; rate from %s)."
+            % (
+                format_money(realized_modeled),
+                "%g" % hours_saved,
+                format_money(hourly_rate),
+                rate_source,
+            )
+        )
+    elif hours_saved is not None:
+        lines.append(
+            "- Realized (modeled): no dollar figure, %s hours saved "
+            "supplied but no loaded hourly rate was configured (set "
+            "HARNESS_LOADED_HOURLY_RATE or pass --hourly-rate); time "
+            "saved is reported in hours only, not dollars."
+            % ("%g" % hours_saved)
+        )
+    elif hourly_rate is not None:
+        lines.append(
+            "- Realized (modeled): no dollar figure, a loaded hourly "
+            "rate is configured but no hours saved were supplied with "
+            "the job; pass --hours-saved to quantify time saved."
+        )
+    else:
+        lines.append(
+            "- Realized (modeled): no dollar figure, no hours saved and "
+            "no loaded hourly rate supplied."
+        )
+    lines.append(
+        "- Unrealized (modeled): none stated, no basis supplied for "
+        "time still spent manually."
+    )
+    realized_total = realized_measured + realized_modeled
+    lines.append("- Realized total: %s." % format_money(realized_total))
+    lines.append(
+        "- Total quantified: realized %s; unrealized %s."
+        % (
+            format_money(realized_total),
+            format_money(unrealized_measured),
+        )
+    )
+    return "\n".join(lines)
+
+
+# The three agents whose drafts value-finder synthesizes (SPEC.md):
+# renewal-desk health, expansion-spotter gaps, onboarding-guide
+# first-value checklist. The approval queue is the store they already
+# share; no new cross-agent mechanism is introduced.
+_PRIOR_DRAFT_AGENTS = ("renewal-desk", "expansion-spotter", "onboarding-guide")
+
+
+def _prior_drafts(job: dict, account: str) -> str:
+    """Prior drafts from the other agents for this account, from the
+    approval queue file the job names. The queue is the store those
+    drafts already share; value-finder reads it, it does not invent a
+    new channel. Returns a short summary for the prompt context. URLs
+    are stripped from the excerpts: the model never sees a URL."""
+    path = job.get("approvals_file")
+    if not path:
+        return (
+            "No prior agent drafts on file (no approvals file supplied "
+            "with the job)."
+        )
+    try:
+        queue = ApprovalQueue(path)
+    except Exception:
+        return "Prior agent drafts could not be read."
+    items = [
+        item
+        for item in queue.list_all()
+        if item.agent in _PRIOR_DRAFT_AGENTS
+        and _extract_account(item.job) == account
+    ]
+    if not items:
+        return (
+            "No prior drafts from renewal-desk, expansion-spotter, or "
+            "onboarding-guide for this account."
+        )
+    items.sort(key=lambda i: i.created_at, reverse=True)
+    parts = []
+    for item in items[:3]:
+        excerpt = re.sub(r"https?://\S+", "[link removed]", item.draft)
+        excerpt = " ".join(excerpt.split())
+        if len(excerpt) > 500:
+            excerpt = excerpt[:500] + " ..."
+        parts.append(
+            "%s (%s): %s" % (item.agent, item.created_at, excerpt)
+        )
+    return "Prior agent drafts for this account:\n" + "\n".join(parts)
+
+
+class ValueFinderAgent(Agent):
+    """Finds realized and unrealized outcomes in an account, quantified
+    in money or time (=money).
+
+    Gathers: account summary, open opportunities, open support cases,
+    and recent Slack signals. Reads prior drafts from renewal-desk,
+    expansion-spotter, and onboarding-guide out of the approval queue
+    and synthesizes them. Drafts: a report with realized outcomes with
+    evidence, unrealized gaps with the fix, and a dollar total,
+    structured for an executive business review.
+
+    Quantification is harness-computed, not model prose: closed-won
+    opportunity amounts are measured, hours saved x the loaded hourly
+    rate is modeled, and every dollar figure is labeled with its basis.
+    The loaded hourly rate comes from the job (--hourly-rate) or the
+    HARNESS_LOADED_HOURLY_RATE environment variable; it is never
+    assumed. A figure with no basis does not appear.
+    """
+
+    name = "value-finder"
+    display_name = "Value Finder"
+    description = (
+        "Finds realized and unrealized outcomes in money or time: time "
+        "saved, revenue protected, gaps not yet captured."
+    )
+    keywords = [
+        "value",
+        "value report",
+        "value-finder",
+        "value finder",
+        "realized value",
+        "unrealized value",
+        "roi",
+        "return on investment",
+        "time saved",
+        "money saved",
+        "cost saved",
+        "savings",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Covers realized outcomes",
+            keywords=["realized"],
+        ),
+        ProofItem(
+            "Covers unrealized gaps",
+            keywords=["unrealized"],
+        ),
+        ProofItem(
+            "Cites the account record",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Cites opportunities",
+            sources=["salesforce_list_opportunities"],
+        ),
+        ProofItem(
+            "Cites support cases",
+            sources=["salesforce_list_cases"],
+        ),
+        ProofItem(
+            "Cites Slack signals",
+            sources=["slack_search_messages"],
+        ),
+        ProofItem(
+            "Dollar figures are labeled measured or modeled",
+            any_keywords=["measured", "modeled"],
+        ),
+        ProofItem(
+            "Gives a dollar total",
+            keywords=["total"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources, links, results = _gather_with_results(
+            registry, calls, budget
+        )
+        context["prior_agent_drafts"] = _prior_drafts(job, account)
+        hours_saved = job.get("hours_saved")
+        if hours_saved is not None:
+            try:
+                hours_saved = float(hours_saved)
+            except (TypeError, ValueError):
+                hours_saved = None
+        if hours_saved is not None and hours_saved <= 0:
+            hours_saved = None
+        hourly_rate = job.get("hourly_rate")
+        if hourly_rate is not None:
+            try:
+                hourly_rate = float(hourly_rate)
+            except (TypeError, ValueError):
+                hourly_rate = None
+        if hourly_rate is not None and hourly_rate <= 0:
+            hourly_rate = None
+        rate_source = job.get("hourly_rate_source") or "the job"
+        figures = _value_figures(
+            results.get("salesforce_list_opportunities"),
+            hours_saved,
+            hourly_rate,
+            rate_source,
+        )
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a value report for account %r, structured for an "
+            "executive business review. Cover: realized outcomes with "
+            "the evidence for each (time saved, errors caught, revenue "
+            "protected or expanded), unrealized gaps with the fix for "
+            "each (usage gaps, workflows still manual, expansion not "
+            "yet captured, value at risk), and a dollar total. Label "
+            "every dollar figure measured or modeled and cite its "
+            "basis; a figure with no basis does not appear. Do not "
+            "invent numbers that are not in the context." % account,
+        )
+        system = (
+            "You are the value finder for a customer success team. "
+            "You measure outcomes, not usage: time saved, revenue "
+            "protected, gaps not yet captured. Every dollar figure "
+            "must be labeled measured or modeled with its basis, and "
+            "a figure with no basis must not appear. Do not invent "
+            "numbers that are not in the context."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + figures
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            )
+        )
+
+
 def build_agents() -> dict[str, Agent]:
-    """All eight agents, keyed by name. All implemented."""
+    """All nine agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -1415,6 +1794,7 @@ def build_agents() -> dict[str, Agent]:
         "qbr-builder": QBRBuilderAgent(),
         "advocate-finder": AdvocateFinderAgent(),
         "voice-of-customer": VoiceOfCustomerAgent(),
+        "value-finder": ValueFinderAgent(),
     }
     return agents
 

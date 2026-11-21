@@ -57,12 +57,33 @@ Environment variables:
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir).
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
+    HARNESS_LOADED_HOURLY_RATE
+                             Loaded hourly rate in dollars, used by
+                             value-finder to turn hours saved into dollars
+                             (hours saved x loaded rate). Never assumed:
+                             without it (and without --hourly-rate on the
+                             run) time saved is reported in hours only,
+                             not dollars.
 """
 
 from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+
+
+def _parse_rate(raw: str | None) -> float | None:
+    """Parse a loaded hourly rate from the environment. A missing,
+    unparseable, zero, or negative rate is None: the rate is never
+    assumed, and without one time saved is reported in hours only,
+    not dollars."""
+    if raw is None:
+        return None
+    try:
+        rate = float(raw)
+    except ValueError:
+        return None
+    return rate if rate > 0 else None
 
 
 @dataclass
@@ -95,6 +116,7 @@ class Config:
     champify_api_base_url: str = "https://api.champify.io/v1"
     approvals_file: str = "approvals.json"
     token_budget_per_job: int = 8000
+    loaded_hourly_rate: float | None = None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -140,6 +162,9 @@ class Config:
             ),
             token_budget_per_job=int(
                 os.environ.get("HARNESS_TOKEN_BUDGET", "8000")
+            ),
+            loaded_hourly_rate=_parse_rate(
+                os.environ.get("HARNESS_LOADED_HOURLY_RATE")
             ),
         )
 

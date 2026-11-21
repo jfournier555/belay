@@ -13,7 +13,8 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 ```
 Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
-  -> Specialist agent (1 of 8, all implemented in v0.7)
+  -> Specialist agent (1 of 9, all implemented: the original 8 in v0.7,
+     value-finder in v0.9.0)
   -> Tools (Salesforce + Slack, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
@@ -68,7 +69,12 @@ python -m harness.run run --agent renewal-desk --account "Acme Corp" --stub --sh
 # Free-text routing (the router picks the agent).
 python -m harness.run run --text "draft a renewal plan for Acme Corp" --stub
 
-# See the eight agents and the registered tools.
+# Value report with quantified time saved. The rate and the hours are
+# explicit inputs, never assumed: --hourly-rate, or
+# HARNESS_LOADED_HOURLY_RATE in the environment.
+python -m harness.run run --agent value-finder --account "Acme Corp" --stub --hourly-rate 150 --hours-saved 10 --show
+
+# See the nine agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
 
@@ -97,7 +103,7 @@ Then run without `--stub`:
 python -m harness.run run --agent renewal-desk --account "Acme Corp"
 ```
 
-## The eight agents
+## The nine agents
 
 Each agent owns one job, not a schedule. Cadence is the scheduler
 (v1.4.0), a separate architecture piece.
@@ -112,6 +118,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | qbr-builder | implemented | Drafts a quarterly business review: outcomes, adoption, risks. |
 | advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it, how much influence each carries, and which champions changed jobs. |
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
+| value-finder | implemented | Finds realized and unrealized outcomes in money or time: time saved, revenue protected, gaps not yet captured. Every dollar figure is labeled measured or modeled with its basis. |
 
 ## Dashboard
 
@@ -149,7 +156,6 @@ agent candidates below.
 
 | Agent | Target | What it will do |
 |---|---|---|
-| value-finder | v0.9.0 | Finds realized and unrealized value in money or time: what is delivered, what is not yet captured. |
 | risk-watcher | v1.6.0 | Watches continuously for churn signals: usage drops, ticket spikes, champion departure, sponsor disengagement. When a champion leaves, it asks whether the org mandate changed. |
 | escalation-manager | v1.7.0 | Gathers case history, customer impact, and internal status; drafts the exec update and customer comms. |
 | competitive-defense | v1.8.0 | Watches for displacement risk: competitor mentions, evaluation signals, champion doubt. |
@@ -192,13 +198,13 @@ and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v0.8 honesty)
 
-**Real, tested (214 unit tests, all passing):**
+**Real, tested (253 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- All eight agents, end to end, in stub mode: renewal desk, briefer,
+- All nine agents, end to end, in stub mode: renewal desk, briefer,
   expansion spotter, onboarding guide, scout, qbr builder, advocate
-  finder, and voice of customer.
+  finder, voice of customer, and value finder.
 - Proof checklist: every agent self-checks its draft against a "done"
   checklist before queueing, and every draft carries clickable deep
   links to the records it cites; failures are flagged in the draft
@@ -230,8 +236,7 @@ and shared, so the cutover is a client, not a rewrite.
   available.
 
 **Scaffolded / planned, not built:**
-- value-finder (v0.9.0): realized and unrealized value in money or time.
-  Then v1.0.0, the CLI complete.
+- v1.0.0, the CLI complete, follows value-finder (v0.9.0).
 - Architecture pieces, planned: composition, memory, write-back,
   scheduling, MCP client. They ship first as minor releases in the v1
   line (v1.1.0–v1.5.0).
