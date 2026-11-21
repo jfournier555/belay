@@ -386,13 +386,32 @@ session, calls the tool, and closes it.
 
 ## Dashboard
 
-The dashboard is the UI the CSM operates from. It reads the live
-approval queue file and shows the numbers from real harness state:
-accounts watched, at-risk drafts, drafts ready, advocates found, the
-approval queue with each draft's completeness check and source links, source status,
-agent last-run state, the event log, and the token budget. When the
-queue is empty it says so; no number is ever invented. Everything is a
-draft until I say send.
+The dashboard is the UI the CSM operates from. It is the single
+interface for the whole harness: eight views over the live store
+files, all numbers from real harness state, nothing invented.
+
+- **Overview:** the queue stat strip (accounts watched, at-risk
+  drafts, drafts ready, advocates found) plus the harness beyond the
+  queue (open escalations, due schedules, accounts with memory, write
+  drafts pending), sources, event log, token budget.
+- **Queue:** every draft with its completeness check and source
+  links; approve, edit, and reject call the same approval queue the
+  CLI uses, and an edit is recorded as memory with the correction.
+- **Memory:** per-account records, newest first, with the correction
+  on edited drafts; forget one account from here.
+- **Schedules:** every schedule with its next run time and last-run
+  state; add and remove from here.
+- **Escalations:** every escalation record with its state; resolve
+  one from here, with a note.
+- **Write-back:** write drafts with their plan and, once approved,
+  what applied, op by op.
+- **MCP servers:** configured external servers; add and remove from
+  here, and probe one to list its tools or see why it is unreachable.
+- **Agents:** the fifteen agents, one line each, with last-run state.
+
+When a store is empty the view says so; a missing or corrupt store
+file renders as an empty view, never a crash. Everything is a draft
+until I say send.
 
 ```bash
 python -m harness.run dashboard
@@ -409,7 +428,7 @@ agent candidates below.
 
 | Piece | Target | What it will do |
 |---|---|---|
-| dashboard | v0.8.0 (shipped) | Local web UI over the live approval queue: stat strip, queue with completeness checks, source links, and approve/reject, sources, agents, event log, token budget. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision. |
+| dashboard | v0.8.0 (shipped), finished v1.11.0 | Local web UI over the live harness state, one interface for the whole harness: overview, queue (approve/edit/reject), memory, schedules, escalations, write-back, MCP servers, agents. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision; finished after the v1 line, as v1.11.0, not v2.0.0: the spec reserves v2.0.0 for a major new capability family. |
 | composition | v1.1.0 (shipped) | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts, falling back to direct gathering when no prior drafts exist. |
 | memory | v1.2.0 (shipped) | Persistent memory across runs: past drafts, decisions, and corrections per account, injected as context next run, bounded by the token budget. Capture in the approval queue; edits store the correction itself. Local only, never crosses accounts. |
 | write-back | v1.3.0 (shipped) | The first write tools plus approval-gated execution. The Salesforce updater agent drafts field changes, activity logs, and stage moves; only an approved write draft executes, exactly once per change. |
@@ -464,7 +483,7 @@ in-process connector tools.
 
 ## What is real vs scaffolded (v1.0.0 honesty)
 
-**Real, tested (496 unit tests, all passing):**
+**Real, tested (514 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
@@ -494,11 +513,13 @@ in-process connector tools.
   selected by description and called with arguments filled from the
   job; a server that fails to connect is reported and skipped; write
   tools are never gathered, only approval-gated execution runs them.
-- The dashboard (v0.8.0): local FastAPI server reading the live queue
-  file. Stat strip, approval queue with completeness checks, source
-  links, and working approve/reject, source status, agent last-run
-  state, event log, token budget. Every number comes from harness
-  state; an empty queue renders an honest empty state.
+- The dashboard (v0.8.0, finished v1.11.0): local FastAPI server
+  reading the live store files. Overview, approval queue with
+  completeness checks, source links, and working approve/edit/reject,
+  memory, schedules, escalations, write-back, MCP servers, agents.
+  Every number comes from harness state; an empty store renders an
+  honest empty state, and a corrupt store file degrades to empty,
+  never a crash.
 
 **Written, not verified against a live system:**
 - The live Salesforce REST/SOQL calls, the live Slack Web API calls,

@@ -1,27 +1,35 @@
 """Belay dashboard: the local web UI the CSM operates from.
 
-Serves one page on localhost that reads live harness state: the approval
-queue file, the registered agents, the connector configuration, and the
-token budget. Every number on the page comes from that state; nothing is
-invented. When the queue is empty the page says so.
+Serves pages on localhost that read live harness state: the approval
+queue file, the registered agents, the connector configuration, and
+the token budget, plus every v1.x surface finished in v1.11.0:
+memory, schedules, escalations, write-back, and external MCP
+servers. Every number on the page comes from that state; nothing is
+invented. When a store is empty the page says so, and a missing or
+corrupt store file degrades to an empty view, never a crash.
 
 Run it with:
 
     python -m harness.dashboard [--port 8000]
 
 Then open http://127.0.0.1:8000 in a browser. Local-only, no auth: it
-binds to loopback and reads the same approvals file the CLI uses
-(HARNESS_APPROVALS_FILE, default approvals.json in the working dir).
+binds to loopback and reads the same files the CLI uses
+(HARNESS_APPROVALS_FILE, HARNESS_MEMORY_FILE, HARNESS_SCHEDULES_FILE,
+HARNESS_ESCALATIONS_FILE, HARNESS_MCP_SERVERS_FILE, defaults in the
+working dir).
 
-Approve and reject buttons call the same ApprovalQueue methods the CLI
-uses. Nothing writes back to Salesforce until a human approves it.
-Write-back shipped in v1.3.0: the updater agent drafts changes, and
-only an approved write draft executes, through this same queue.
+Approve, edit, and reject buttons call the same ApprovalQueue methods
+the CLI uses. Nothing writes back to Salesforce until a human
+approves it. Write-back shipped in v1.3.0: the updater agent drafts
+changes, and only an approved write draft executes, through this
+same queue.
 """
 
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
@@ -32,7 +40,15 @@ from .agents import _extract_account
 from .approvals import ApprovalQueue
 from .config import Config
 from .escalations import EscalationStore
+from .mcp_client import MCPClient, MCPServerStore
 from .memory import AccountMemory
+from .scheduler import (
+    ScheduleStore,
+    _parse_iso,
+    is_due,
+    next_run_after,
+    validate_schedule,
+)
 from .summarizer import estimate_tokens
 
 _TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
@@ -160,7 +176,7 @@ def source_statuses(config: Config) -> list[dict]:
 
 
 def agent_states(queue: ApprovalQueue) -> list[dict]:
-    """Right rail: the 12 agents.
+    """Right rail: the 15 agents.
 
     Last-run state comes from the queue: the newest draft each agent
     produced, and when. An agent with no drafts has never run.
@@ -268,18 +284,194 @@ def queue_view(queue: ApprovalQueue) -> list[dict]:
     return view
 
 
-def build_state(queue: ApprovalQueue, config: Config) -> dict:
-    """Everything the page renders, in one dict."""
+def build_state(
+    queue: ApprovalQueue,
+    config: Config,
+    memory: AccountMemory | None = None,
+    schedules: ScheduleStore | None = None,
+    escalations: EscalationStore | None = None,
+    mcp_servers: MCPServerStore | None = None,
+) -> dict:
+    """Everything the page renders, in one dict.
+
+    Stores not passed in are built from the config paths, so a plain
+    build_state(queue, config) still covers every view. A missing or
+    corrupt store file reads as empty in that store, never a crash:
+    each store's loader already degrades that way.
+    """
+    memory = memory or AccountMemory(config.memory_file)
+    schedules = schedules or ScheduleStore(config.schedules_file)
+    escalations = escalations or EscalationStore(config.escalations_file)
+    mcp_servers = mcp_servers or MCPServerStore(config.mcp_servers_file)
     return {
         "version": __version__,
         "stats": queue_stats(queue),
+        "overview": overview_stats(queue, memory, schedules, escalations),
         "sources": source_statuses(config),
         "agents": agent_states(queue),
         "queue": queue_view(queue),
         "events": event_log(queue),
         "tokens": token_budget_state(queue, config),
+        "memory": memory_view(memory),
+        "schedules": schedules_view(schedules),
+        "escalations": escalations_view(escalations),
+        "writeback": writeback_view(queue),
+        "mcp_servers": mcp_servers_view(mcp_servers),
         "stub_mode": config.stub_mode,
     }
+
+
+def overview_stats(
+    queue: ApprovalQueue,
+    memory: AccountMemory,
+    schedules: ScheduleStore,
+    escalations: EscalationStore,
+) -> dict:
+    """Second stat strip: the harness beyond the queue.
+
+    - open_escalations: escalation records awaiting a human decision
+      (open) or in flight (escalated); resolved records are done.
+    - due_schedules: enabled schedules whose next run time has
+      arrived.
+    - memory_accounts: accounts with at least one memory record.
+    - write_drafts_pending: pending drafts that carry a write plan.
+    """
+    records = escalations.list_all()
+    due = sum(1 for s in schedules.list() if is_due(s))
+    return {
+        "open_escalations": sum(
+            1 for r in records if r.status in ("open", "escalated")
+        ),
+        "due_schedules": due,
+        "memory_accounts": len(memory.accounts()),
+        "write_drafts_pending": sum(
+            1
+            for item in queue.list_pending()
+            if item.writes
+        ),
+    }
+
+
+def memory_view(memory: AccountMemory) -> list[dict]:
+    """Memory, per account: records newest first, with the correction
+    on edited drafts. One account's records are never mixed with
+    another's; the store enforces that, this view just renders it."""
+    view = []
+    for account, count in memory.accounts():
+        view.append(
+            {
+                "account": account,
+                "count": count,
+                "records": [
+                    {
+                        "id": record.id,
+                        "agent": record.agent,
+                        "outcome": record.outcome,
+                        "timestamp": record.timestamp,
+                        "excerpt": record.excerpt,
+                        "correction": record.correction,
+                        "note": record.note,
+                    }
+                    for record in memory.records_for(account)
+                ],
+            }
+        )
+    return view
+
+
+def schedules_view(store: ScheduleStore) -> list[dict]:
+    """Schedules, oldest first, with the next run time computed live.
+    A schedule whose stored fields are broken is skipped by the
+    store on load, so nothing here can raise on bad data."""
+    now = datetime.now(timezone.utc)
+    view = []
+    for schedule in store.list():
+        try:
+            reference = (
+                _parse_iso(schedule.last_run)
+                or _parse_iso(schedule.created_at)
+                or now
+            )
+            next_run = next_run_after(schedule, reference).isoformat(
+                timespec="seconds"
+            )
+        except (ValueError, TypeError):
+            next_run = None
+        view.append(
+            {
+                "id": schedule.id,
+                "agent": schedule.agent,
+                "account": schedule.account,
+                "cadence": schedule.cadence,
+                "time": schedule.time,
+                "timezone": schedule.timezone,
+                "weekday": schedule.weekday,
+                "text": schedule.text,
+                "enabled": schedule.enabled,
+                "stub": schedule.stub,
+                "created_at": schedule.created_at,
+                "last_run": schedule.last_run,
+                "last_status": schedule.last_status,
+                "last_error": schedule.last_error,
+                "next_run": next_run,
+                "due": is_due(schedule, now),
+            }
+        )
+    return view
+
+
+def escalations_view(store: EscalationStore) -> list[dict]:
+    """Escalation records, oldest first, exactly as stored."""
+    return [record.to_dict() for record in store.list_all()]
+
+
+def writeback_view(queue: ApprovalQueue) -> list[dict]:
+    """Write drafts: queue items that carry a write plan, with their
+    execution status. A write draft that was never approved has no
+    execution; an approved one shows what applied, op by op."""
+    view = []
+    for item in queue.list_all():
+        if not item.writes:
+            continue
+        view.append(
+            {
+                "id": item.id,
+                "agent": item.agent,
+                "account": _extract_account(item.job),
+                "job": item.job,
+                "draft": item.draft,
+                "status": item.status,
+                "created_at": item.created_at,
+                "decided_at": item.decided_at,
+                "writes": item.writes or [],
+                "execution": item.execution or [],
+                "executed_at": item.executed_at,
+            }
+        )
+    return view
+
+
+def mcp_servers_view(store: MCPServerStore) -> list[dict]:
+    """Configured external MCP servers. Reachability is not probed
+    here: connecting to a server can take seconds, and the state
+    endpoint must stay fast. The probe endpoint below connects on
+    demand, per server."""
+    view = []
+    for server in store.list():
+        if server.transport == "sse":
+            target = server.url
+        else:
+            target = (server.command + " " + " ".join(server.args)).strip()
+        view.append(
+            {
+                "name": server.name,
+                "transport": server.transport,
+                "target": target,
+                "read_only": server.read_only,
+                "created_at": server.created_at,
+            }
+        )
+    return view
 
 
 def _load_template() -> str:
@@ -290,8 +482,17 @@ def _load_template() -> str:
 def create_app(
     config: Config | None = None,
     queue: ApprovalQueue | None = None,
+    memory: AccountMemory | None = None,
+    schedules: ScheduleStore | None = None,
+    escalations: EscalationStore | None = None,
+    mcp_servers: MCPServerStore | None = None,
 ) -> FastAPI:
-    """Build the dashboard app. Defaults read the live config and queue."""
+    """Build the dashboard app. Defaults read the live config and stores.
+
+    Stores passed in are used as-is (tests inject temp-backed ones);
+    the rest are built from the config paths and re-read from disk on
+    every request, so changes made from the CLI show up without a
+    restart."""
     cfg = config or Config.from_env()
     app = FastAPI(title="Belay dashboard", version=__version__)
 
@@ -307,13 +508,34 @@ def create_app(
             escalations=EscalationStore(cfg.escalations_file),
         )
 
+    def get_memory() -> AccountMemory:
+        return memory or AccountMemory(cfg.memory_file)
+
+    def get_schedules() -> ScheduleStore:
+        return schedules or ScheduleStore(cfg.schedules_file)
+
+    def get_escalations() -> EscalationStore:
+        return escalations or EscalationStore(cfg.escalations_file)
+
+    def get_mcp_servers() -> MCPServerStore:
+        return mcp_servers or MCPServerStore(cfg.mcp_servers_file)
+
     @app.get("/", response_class=HTMLResponse)
     def index() -> str:
         return _load_template()
 
     @app.get("/api/state")
     def state() -> JSONResponse:
-        return JSONResponse(build_state(get_queue(), cfg))
+        return JSONResponse(
+            build_state(
+                get_queue(),
+                cfg,
+                memory=get_memory(),
+                schedules=get_schedules(),
+                escalations=get_escalations(),
+                mcp_servers=get_mcp_servers(),
+            )
+        )
 
     @app.post("/api/approvals/{item_id}/approve")
     def approve(item_id: str) -> JSONResponse:
@@ -341,6 +563,107 @@ def create_app(
         except KeyError:
             raise HTTPException(status_code=404, detail="Unknown approval item")
         return JSONResponse(item.to_dict())
+
+    @app.post("/api/approvals/{item_id}/edit")
+    def edit(item_id: str, body: dict) -> JSONResponse:
+        # The edit is recorded as memory with the correction itself,
+        # through the same ApprovalQueue.edit the CLI uses, so the next
+        # run for the account learns what the human changed. Status
+        # becomes edited: it still needs a final approve before use.
+        new_draft = str(body.get("draft", "") or "").strip()
+        if not new_draft:
+            raise HTTPException(
+                status_code=400, detail="Edit needs a non-empty draft"
+            )
+        try:
+            item = get_queue().edit(item_id, new_draft)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="Unknown approval item")
+        return JSONResponse(item.to_dict())
+
+    @app.post("/api/memory/{account}/clear")
+    def clear_memory(account: str) -> JSONResponse:
+        removed = get_memory().clear(account)
+        return JSONResponse({"account": account, "removed": removed})
+
+    @app.post("/api/schedules")
+    def add_schedule(body: dict) -> JSONResponse:
+        try:
+            schedule = get_schedules().add(
+                body, valid_agents=set(AGENTS)
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(schedule.to_dict())
+
+    @app.delete("/api/schedules/{schedule_id}")
+    def remove_schedule(schedule_id: str) -> JSONResponse:
+        if not get_schedules().remove(schedule_id):
+            raise HTTPException(status_code=404, detail="Unknown schedule")
+        return JSONResponse({"removed": schedule_id})
+
+    @app.post("/api/escalations/{record_id}/resolve")
+    def resolve_escalation(
+        record_id: str, body: dict | None = None
+    ) -> JSONResponse:
+        store = get_escalations()
+        if store.get(record_id) is None:
+            raise HTTPException(status_code=404, detail="Unknown escalation")
+        note = (body or {}).get("note") or None
+        if not store.resolve(record_id, note=note):
+            raise HTTPException(
+                status_code=400,
+                detail="Escalation %s is already resolved" % record_id,
+            )
+        return JSONResponse(store.get(record_id).to_dict())
+
+    @app.post("/api/mcp-servers")
+    def add_mcp_server(body: dict) -> JSONResponse:
+        try:
+            server = get_mcp_servers().add(body)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(server.to_dict())
+
+    @app.delete("/api/mcp-servers/{name}")
+    def remove_mcp_server(name: str) -> JSONResponse:
+        if not get_mcp_servers().remove(name):
+            raise HTTPException(status_code=404, detail="Unknown MCP server")
+        return JSONResponse({"removed": name})
+
+    @app.get("/api/mcp-servers/{name}/tools")
+    def probe_mcp_server(name: str) -> JSONResponse:
+        # Connect on demand, in a worker thread with a bound, so a
+        # dead server cannot hang the dashboard. A server that fails
+        # to connect is reported, never fatal.
+        server = get_mcp_servers().get(name)
+        if server is None:
+            raise HTTPException(status_code=404, detail="Unknown MCP server")
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(
+                MCPClient(server).list_tools_sync
+            )
+            try:
+                tools = future.result(timeout=15)
+            except TimeoutError:
+                return JSONResponse(
+                    {
+                        "name": name,
+                        "status": "unreachable",
+                        "error": "probe timed out after 15s",
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - reported, never fatal
+                return JSONResponse(
+                    {
+                        "name": name,
+                        "status": "unreachable",
+                        "error": str(exc),
+                    }
+                )
+        return JSONResponse(
+            {"name": name, "status": "ok", "tools": tools}
+        )
 
     return app
 
