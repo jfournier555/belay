@@ -34,11 +34,11 @@ class TestCli(unittest.TestCase):
         for command in ("run", "agents", "tools", "approvals", "dashboard", "memory"):
             self.assertIn(command, buf.getvalue())
 
-    def test_agents_lists_fourteen_implemented(self):
+    def test_agents_lists_fifteen_implemented(self):
         code, out = self._run(["agents"])
         self.assertEqual(code, 0)
         lines = [line for line in out.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 14)
+        self.assertEqual(len(lines), 15)
         self.assertTrue(all("implemented" in line for line in lines))
 
     def test_tools_lists_all_connector_tools_in_stub(self):

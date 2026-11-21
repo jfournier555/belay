@@ -120,8 +120,8 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 
 class TestStakeholderMapperRegistered(unittest.TestCase):
-    def test_fourteen_agents_registered(self):
-        self.assertEqual(len(AGENTS), 14)
+    def test_fifteen_agents_registered(self):
+        self.assertEqual(len(AGENTS), 15)
         agent = AGENTS["stakeholder-mapper"]
         self.assertTrue(agent.implemented)
         self.assertEqual(agent.display_name, "Stakeholder Mapper")

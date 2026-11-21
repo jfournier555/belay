@@ -1,12 +1,12 @@
-"""The specialist agents: the fourteen post-sales jobs the harness covers.
+"""The specialist agents: the fifteen post-sales jobs the harness covers.
 
-The fourteen jobs are the post-sales jobs that matter: scout, briefer,
+The fifteen jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
-risk-watcher, escalation-manager, competitive-defense, and
-stakeholder-mapper.
+risk-watcher, escalation-manager, competitive-defense,
+stakeholder-mapper, and case-triage.
 
-V1 implements fourteen end to end:
+V1 implements fifteen end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -80,7 +80,18 @@ V1 implements fourteen end to end:
   (no economic buyer, an empty champion seat, a successor never named)
   are named, never papered over.
 
-All fourteen are implemented. Every job in the harness has a working agent.
+- case-triage: triages the incoming cases, tickets, and issues on an
+  account (Salesforce cases, Zendesk tickets, Linear issues, and Gmail
+  threads that read like support requests) and drafts a triage brief:
+  items grouped by subject across systems, ranked by priority,
+  each with a suggested owner and a draft first response or internal
+  summary. Priority is harness-computed from the record's own
+  severity, age, and blocking impact, never model prose. Items that
+  are stale, duplicated across systems, or already covered by another
+  agent's draft are flagged as such rather than re-triaged. With no
+  open items the draft is a clean bill, stated as such.
+
+All fifteen are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -4539,8 +4550,574 @@ class EscalationManagerAgent(Agent):
         )
 
 
+# The three agents whose drafts case-triage composes from (v1.10.0):
+# risk-watcher (its brief already covers the high-severity records),
+# escalation-manager (its plans already own the escalated signals),
+# voice-of-customer (its themes already cover the pain points).
+# The queue is the only channel between agents.
+_TRIAGE_SOURCE_AGENTS = (
+    "risk-watcher",
+    "escalation-manager",
+    "voice-of-customer",
+)
+
+# Priority rank: lower sorts first, so P1 items head the brief.
+_TRIAGE_PRIORITY_RANK = {"P1": 0, "P2": 1, "P3": 2}
+
+# An item is stale when it has sat open this long with nothing actively
+# being worked on it.
+_TRIAGE_STALE_DAYS = 14
+
+# Words in a Gmail excerpt that make the thread a support request, not
+# a sales or evaluation thread. An evaluation ask ("send a comparison")
+# is competitive-defense's job, not triage's.
+_TRIAGE_SUPPORT_WORDS = (
+    "fails",
+    "failing",
+    "timeout",
+    "error",
+    "broken",
+    "not working",
+    "blocking",
+    "still waiting",
+    "fix",
+)
+
+# Words in a record's own text that mark it as blocking the customer:
+# a blocked renewal or rollout is one priority higher than the record's
+# own severity says. The words come from the record itself, never the
+# model.
+_TRIAGE_BLOCKING_WORDS = ("blocking", "blocks", "block the")
+
+# Words too generic to join a Gmail thread to a case group: the account
+# name and the filler around it. "Re:" never survives _norm_subject
+# anyway (it is punctuation), but it is listed so the intent is plain.
+_TRIAGE_STOPWORDS = {
+    "the",
+    "for",
+    "and",
+    "with",
+    "from",
+    "before",
+    "acme",
+    "corp",
+}
+
+
+def _triage_priority(priority, age_days, text="") -> str:
+    """Priority of one open record, harness-computed.
+
+    High or urgent is P1. A medium record aged seven days or more is
+    P1 too: it has waited long enough. Medium is P2, low aged fourteen
+    days or more is P2, everything else is P3. A record whose own text
+    says it is blocking the customer (a renewal, a rollout) moves one
+    level up. Zendesk calls its middle priority "normal"; it counts as
+    medium here, the same as _record_severity."""
+    priority = str(priority or "").lower()
+    try:
+        age = int(age_days) if age_days is not None else 0
+    except (TypeError, ValueError):
+        age = 0
+    if priority in ("urgent", "high"):
+        level = "P1"
+    elif priority in ("medium", "normal") and age >= 7:
+        level = "P1"
+    elif priority in ("medium", "normal"):
+        level = "P2"
+    elif priority == "low" and age >= _TRIAGE_STALE_DAYS:
+        level = "P2"
+    else:
+        level = "P3"
+    lowered = str(text or "").lower()
+    if level != "P1" and any(
+        word in lowered for word in _TRIAGE_BLOCKING_WORDS
+    ):
+        level = "P1" if level == "P2" else "P2"
+    return level
+
+
+def _triage_distinctive_words(subject: str) -> set:
+    """The words that identify a subject: length three or more, minus
+    the stopwords. Two subjects that share two of these are the same
+    issue in different words, which is how a Gmail thread joins the
+    case group it is about."""
+    words = set()
+    for word in re.split(r"\W+", str(subject or "").lower()):
+        if len(word) >= 3 and word not in _TRIAGE_STOPWORDS:
+            words.add(word)
+    return words
+
+
+def _triage_entries(
+    results: dict, account: str, prior_items: list | None = None
+) -> list[dict]:
+    """The open items for an account, grouped and priority-ranked.
+
+    Deterministic, harness-computed: the model never decides what
+    counts as an item or how urgent it is. Salesforce cases, Zendesk
+    tickets, and Linear issues group by normalized subject (the v1.6.0
+    pattern): the same SSO failure in three systems is one entry, not
+    three. A Gmail thread that reads like a support request joins the
+    group it shares two distinctive words with, or becomes its own
+    entry when it matches none. Closed, solved, done, and canceled
+    records are not items: triage is about what is still open.
+
+    Each entry carries its priority (worst of its records, oldest
+    first within a priority), the systems it appears in, a suggested
+    owner (the Linear assignee when one exists, else the account
+    owner, else unassigned), and its flags: duplicated across
+    systems, stale, or already covered by a prior agent's draft (the
+    full draft text is searched for the subject, so a flag means the
+    other agent really wrote about this issue). Entries sort P1
+    first, then by age, oldest first.
+    """
+    collected: list[tuple[dict, str, str, str, str]] = []
+    cases = results.get("salesforce_list_cases") or {}
+    for case in cases.get("cases", []) or []:
+        if str(case.get("status", "")).lower() in ("closed", "solved"):
+            continue
+        collected.append(
+            (
+                case,
+                "Salesforce case %s"
+                % case.get("number", case.get("id", "?")),
+                str(case.get("subject", "")),
+                "Salesforce",
+                str(case.get("description", "") or ""),
+            )
+        )
+    tickets = results.get("zendesk_list_tickets") or {}
+    for ticket in tickets.get("tickets", []) or []:
+        if str(ticket.get("status", "")).lower() not in ("open", "pending"):
+            continue
+        collected.append(
+            (
+                ticket,
+                "Zendesk ticket %s" % ticket.get("id", "?"),
+                str(ticket.get("subject", "")),
+                "Zendesk",
+                str(ticket.get("description", "") or ""),
+            )
+        )
+    issues = results.get("linear_list_issues") or {}
+    for issue in issues.get("issues", []) or []:
+        if str(issue.get("status", "")).lower() in (
+            "done",
+            "canceled",
+            "cancelled",
+        ):
+            continue
+        collected.append(
+            (
+                issue,
+                "Linear issue %s"
+                % issue.get("identifier", issue.get("id", "?")),
+                str(issue.get("title", "")),
+                "Linear",
+                str(issue.get("description", "") or ""),
+            )
+        )
+    groups: dict[str, dict] = {}
+    for record, label, subject, system, text in collected:
+        key = _norm_subject(subject)
+        if not key:
+            continue
+        group = groups.setdefault(
+            key,
+            {
+                "subject": subject,
+                "parts": [],
+                "records": [],
+                "words": _triage_distinctive_words(subject),
+            },
+        )
+        group["records"].append(record)
+        group["parts"].append(
+            "%s (%s, %s day(s) open)"
+            % (
+                label,
+                str(record.get("priority", "?")).lower(),
+                record.get("age_days", "?"),
+            )
+        )
+    # Gmail threads that read like support requests: join the group
+    # they are about, or stand alone when they match none. An
+    # evaluation ask is not a support request and is skipped here.
+    messages = results.get("gmail_search_messages") or {}
+    for match in messages.get("matches", []) or []:
+        subject = str(match.get("subject", "") or "")
+        excerpt = str(match.get("excerpt", "") or "")
+        lowered = (subject + " " + excerpt).lower()
+        if not any(word in lowered for word in _TRIAGE_SUPPORT_WORDS):
+            continue
+        words = _triage_distinctive_words(subject)
+        best_key = None
+        best_overlap = 0
+        for key, group in groups.items():
+            overlap = len(words & group["words"])
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_key = key
+        if best_key is not None and best_overlap >= 2:
+            group = groups[best_key]
+            thread_id = str(match.get("thread_id", match.get("id", "?")))
+            if thread_id not in group.setdefault("gmail_threads", set()):
+                group["gmail_threads"].add(thread_id)
+                group["records"].append(match)
+                group["parts"].append(
+                    "Gmail thread %s (support request)" % thread_id
+                )
+        else:
+            key = "gmail:" + str(match.get("thread_id", match.get("id", "?")))
+            groups[key] = {
+                "subject": subject,
+                "parts": [
+                    "Gmail thread %s (support request)"
+                    % match.get("thread_id", match.get("id", "?"))
+                ],
+                "records": [match],
+                "words": words,
+                "gmail_threads": {
+                    str(match.get("thread_id", match.get("id", "?")))
+                },
+            }
+    account_record = results.get("salesforce_get_account") or {}
+    account_owner = str(account_record.get("owner", "") or "")
+    prior_texts = []
+    for item in prior_items or []:
+        prior_texts.append((item.agent, str(item.draft or "").lower()))
+    entries: list[dict] = []
+    for key, group in groups.items():
+        records = group["records"]
+        priority = "P3"
+        max_age = 0
+        being_worked = False
+        has_linear = False
+        owner = ""
+        for record in records:
+            text = " ".join(
+                str(record.get(field, "") or "")
+                for field in ("subject", "title", "description", "excerpt")
+            )
+            level = _triage_priority(
+                record.get("priority"), record.get("age_days"), text
+            )
+            if _TRIAGE_PRIORITY_RANK[level] < _TRIAGE_PRIORITY_RANK[priority]:
+                priority = level
+            try:
+                age = int(record.get("age_days") or 0)
+            except (TypeError, ValueError):
+                age = 0
+            max_age = max(max_age, age)
+            if str(record.get("status", "")).lower() in (
+                "working",
+                "in progress",
+            ):
+                being_worked = True
+            if record.get("identifier"):
+                # A Linear issue (identifier ENG-###) is in this group,
+                # assigned or not: the engineering issue already exists,
+                # so the next step is to pick it up, not create it.
+                has_linear = True
+            if record.get("assignee"):
+                if not owner:
+                    owner = str(record["assignee"])
+        if not owner:
+            owner = account_owner or "unassigned — needs an owner"
+        systems = sorted(
+            {
+                part.split(" ")[0]
+                for part in group["parts"]
+            }
+        )
+        covered_by = None
+        subject_key = _norm_subject(group["subject"])
+        if subject_key:
+            for agent_name, draft_text in prior_texts:
+                if subject_key in draft_text:
+                    covered_by = agent_name
+                    break
+        entries.append(
+            {
+                "key": key,
+                "subject": group["subject"],
+                "priority": priority,
+                "max_age": max_age,
+                "parts": group["parts"],
+                "systems": systems,
+                "owner": owner,
+                "being_worked": being_worked,
+                "has_linear": has_linear,
+                "duplicated": len(systems) >= 2,
+                "stale": max_age >= _TRIAGE_STALE_DAYS and not being_worked,
+                "covered_by": covered_by,
+            }
+        )
+    entries.sort(
+        key=lambda e: (_TRIAGE_PRIORITY_RANK[e["priority"]], -e["max_age"])
+    )
+    return entries
+
+
+def _triage_first_response(entry: dict) -> str:
+    """The draft first response for one entry, harness-written.
+
+    Being worked on: say so and promise the next update when there is
+    progress to report. Queued: say who has it and promise the plan
+    once work starts. No dates are promised: the records carry none."""
+    if entry["being_worked"]:
+        return (
+            "Thanks for raising this. %r is being worked on now by %s "
+            "— we'll share the next update as soon as there's progress "
+            "to report." % (entry["subject"], entry["owner"])
+        )
+    return (
+        "Thanks for raising this. %r is queued with %s — we'll confirm "
+        "the plan and share the next update once work starts."
+        % (entry["subject"], entry["owner"])
+    )
+
+
+def _triage_internal_summary(entry: dict) -> str:
+    """The draft internal summary for one entry, harness-written: what
+    it is, how long it has been open, who owns it, and the next step."""
+    if entry["being_worked"]:
+        next_step = "ship the fix"
+    elif entry["has_linear"]:
+        next_step = "pick up and scope the engineering issue"
+    else:
+        next_step = "create the engineering issue and assign an owner"
+    return (
+        "%s: %r — open %d day(s) across %s. Owner: %s. Next: %s."
+        % (
+            entry["priority"],
+            entry["subject"],
+            entry["max_age"],
+            ", ".join(entry["systems"]),
+            entry["owner"],
+            next_step,
+        )
+    )
+
+
+def _triage_block(entries: list[dict], account: str) -> str:
+    """The harness-computed triage block appended to the draft:
+    overall priority, the priority-ranked entries, and for each the
+    evidence, the suggested owner, the flags, and the draft first
+    response and internal summary. An entry already covered by
+    another agent's draft is flagged, not re-triaged: no new first
+    response is drafted for it. No entries means a clean bill,
+    stated as such, never an invented item."""
+    if not entries:
+        return (
+            "Triage (harness-computed): No open cases, tickets, or "
+            "issues for %s. Overall priority: none. No suggested owner "
+            "is needed and no first response to draft: there is nothing "
+            "open to own or answer." % account
+        )
+    lines = [
+        "Triage for %s — priority-ranked (%d open item(s), grouped "
+        "from the gathered records):" % (account, len(entries)),
+        "Overall priority: %s." % entries[0]["priority"],
+    ]
+    for entry in entries:
+        line = (
+            "%s — %r (open %d day(s), %s). Suggested owner: %s."
+            % (
+                entry["priority"],
+                entry["subject"],
+                entry["max_age"],
+                "; ".join(entry["parts"]),
+                entry["owner"],
+            )
+        )
+        flags = []
+        if entry["duplicated"]:
+            flags.append(
+                "tracked in %d systems — consolidate"
+                % len(entry["systems"])
+            )
+        if entry["stale"]:
+            flags.append(
+                "stale: open %d day(s) with no progress" % entry["max_age"]
+            )
+        if entry["covered_by"]:
+            flags.append(
+                "already covered in the %s draft — no new first "
+                "response drafted" % entry["covered_by"]
+            )
+        if flags:
+            line += " Flags: %s." % "; ".join(flags)
+        if entry["covered_by"]:
+            line += " First response: none drafted (already covered)."
+        else:
+            line += " First response: %s" % _triage_first_response(entry)
+        line += " Internal summary: %s" % _triage_internal_summary(entry)
+        lines.append("- " + line)
+    return "\n".join(lines)
+
+
+class CaseTriageAgent(Agent):
+    """Triages the incoming cases, tickets, and issues on an account
+    and drafts a triage brief.
+
+    Gathers: account summary, open Salesforce cases, Zendesk tickets,
+    Linear issues, and recent Gmail threads. Drafts: a triage brief
+    with the open items grouped by subject across systems, ranked by
+    priority, each with a suggested owner and a draft first response
+    or internal summary.
+
+    Composition (v1.1.0): when prior drafts from risk-watcher,
+    escalation-manager, and voice-of-customer exist for the account,
+    the brief is built from those drafts as well as the fresh gather:
+    an item the other agents already covered is flagged, not
+    re-triaged, and the draft carries a harness-written provenance
+    line naming the agents it was composed from. The items themselves
+    are always gathered fresh: they are the job, not the context.
+    When no prior drafts exist, the agent gathers directly, its
+    previous behavior.
+
+    Priority is harness-computed, never model prose: high or urgent
+    is P1, a medium record aged seven days or more is P1, medium is
+    P2, low aged fourteen days or more is P2, and a record whose own
+    text says it is blocking the customer moves one level up. With no
+    open items at all the draft is a clean bill, stated as such.
+    """
+
+    name = "case-triage"
+    display_name = "Case Triage"
+    description = (
+        "Triages incoming cases, tickets, and issues: priority, owner, "
+        "first response. Drafts a triage brief."
+    )
+    keywords = [
+        "case-triage",
+        "triage",
+        "ticket triage",
+        "triage cases",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "States the overall priority",
+            keywords=["overall priority"],
+        ),
+        ProofItem(
+            "Gives a suggested owner per item",
+            keywords=["suggested owner"],
+        ),
+        ProofItem(
+            "Drafts a first response or internal summary",
+            keywords=["first response"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _TRIAGE_SOURCE_AGENTS
+        )
+        # The items are the job, so they are always gathered fresh,
+        # composed or not. What composition adds is the coverage check
+        # (an item another agent already covered is flagged, not
+        # re-triaged) and the provenance line.
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("zendesk_list_tickets", {"organization": account}),
+            ("linear_list_issues", {}),
+            ("gmail_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources, links, results = _gather_with_results(
+            registry, calls, budget, job=job
+        )
+        composed = bool(composed_text)
+        if composed:
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        prior_items = _load_prior_items(job, account, _TRIAGE_SOURCE_AGENTS)
+        entries = _triage_entries(results, account, prior_items)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a triage brief for account %r. Cover: the open "
+            "cases, tickets, and issues in the context ranked by "
+            "priority (P1 first), the evidence for each item with its "
+            "source, a suggested owner per item, and a draft first "
+            "response or internal summary per item. Flag items that "
+            "are stale, duplicated across systems, or already covered "
+            "by another agent's draft. Do not invent an item that is "
+            "not in the context." % account,
+        )
+        system = (
+            "You are the case triage agent for a customer success "
+            "team. You triage what is already open before anything "
+            "new is promised. Rank items by priority, name the owner, "
+            "and draft the first response. Never invent a case, a "
+            "ticket, or an issue that is not in the context."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + _triage_block(entries, account)
+        checklist = list(self.proof_checklist)
+        if not entries:
+            # A clean bill has no items to own or answer, so the
+            # per-item checklist items do not apply; the clean bill
+            # itself is the check.
+            checklist = [
+                item
+                for item in checklist
+                if item.label
+                not in (
+                    "Gives a suggested owner per item",
+                    "Drafts a first response or internal summary",
+                )
+            ]
+            checklist += [
+                ProofItem(
+                    "States the clean bill",
+                    keywords=["no open cases"],
+                ),
+            ]
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 def build_agents() -> dict[str, Agent]:
-    """All fourteen agents, keyed by name. All implemented."""
+    """All fifteen agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -4556,6 +5133,7 @@ def build_agents() -> dict[str, Agent]:
         "escalation-manager": EscalationManagerAgent(),
         "competitive-defense": CompetitiveDefenseAgent(),
         "stakeholder-mapper": StakeholderMapperAgent(),
+        "case-triage": CaseTriageAgent(),
     }
     return agents
 
