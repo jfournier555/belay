@@ -150,6 +150,15 @@ def source_statuses(config: Config) -> list[dict]:
                 else "No credentials: stub data."
             ),
         },
+        {
+            "name": "Linear",
+            "status": "live" if config.linear_configured() else "stub",
+            "detail": (
+                "Connected."
+                if config.linear_configured()
+                else "No credentials: stub data."
+            ),
+        },
     ]
 
 

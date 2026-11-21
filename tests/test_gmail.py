@@ -210,7 +210,7 @@ class TestRenewalDeskGathersGmail(unittest.TestCase):
             p for p in draft.proof if p["label"] == "Cites email threads"
         ][0]
         self.assertTrue(gmail_item["passed"])
-        self.assertEqual(len(draft.proof), 6)
+        self.assertEqual(len(draft.proof), 7)
         gmail_links = [
             link for link in draft.links if "mail.google" in link["url"]
         ]

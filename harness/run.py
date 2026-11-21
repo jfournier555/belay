@@ -29,6 +29,7 @@ import sys
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.hubspot.tools import hubspot_tools
+from connectors.linear.tools import linear_tools
 from connectors.salesforce.tools import salesforce_tools
 from connectors.slack.tools import slack_tools
 from connectors.zendesk.tools import zendesk_tools
@@ -47,7 +48,7 @@ from harness import (
 
 def build_registry(config: Config) -> ToolRegistry:
     """Register the connector tools (Salesforce + Slack + Gong + HubSpot
-    + Gmail + Zoom + Zendesk).
+    + Gmail + Zoom + Zendesk + Linear).
 
     The CRM the agents gather from is Salesforce unless HubSpot is
     configured and Salesforce is not; then it is HubSpot. When both are
@@ -73,6 +74,8 @@ def build_registry(config: Config) -> ToolRegistry:
     for tool in zoom_tools(config):
         registry.register(tool)
     for tool in zendesk_tools(config):
+        registry.register(tool)
+    for tool in linear_tools(config):
         registry.register(tool)
     return registry
 

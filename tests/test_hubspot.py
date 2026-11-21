@@ -28,6 +28,8 @@ from connectors.slack.tools import slack_tools
 
 from connectors.gmail.tools import gmail_tools
 
+from connectors.linear.tools import linear_tools
+
 
 def _stub_config() -> _Config:
     """A config with no credentials: stub mode for every connector."""
@@ -45,6 +47,8 @@ def _hubspot_registry() -> ToolRegistry:
     for tool in slack_tools(config):
         registry.register(tool)
     for tool in gmail_tools(config):
+        registry.register(tool)
+    for tool in linear_tools(config):
         registry.register(tool)
     return registry
 
@@ -246,7 +250,7 @@ class TestRenewalDeskGathersHubSpot(unittest.TestCase):
         self.assertIn("Names the open renewal deal", labels)
         self.assertIn("Names open support tickets", labels)
         self.assertIn("Cites email threads", labels)
-        self.assertEqual(len(draft.proof), 6)
+        self.assertEqual(len(draft.proof), 7)
         self.assertTrue(all(p["passed"] for p in draft.proof))
         hubspot_links = [
             link for link in draft.links if "hubspot" in link["url"]

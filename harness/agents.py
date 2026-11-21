@@ -234,6 +234,21 @@ GMAIL_APP_HOST = "https://mail.google.com"
 STUB_ZENDESK_HOST = "https://acme-stub.zendesk.invalid"
 
 
+# Linear issue links are built from the team key and the identifier:
+# https://linear.app/{team}/issue/{identifier}. Stub data links to
+# the same path on .invalid, so a stub link is well-formed but
+# unmistakably fake.
+STUB_LINEAR_HOST = "https://linear.invalid"
+LINEAR_APP_HOST = "https://linear.app"
+
+
+def _linear_base(result: dict) -> str:
+    """The base URL for Linear deep links from a tool result."""
+    if result.get("_stub"):
+        return STUB_LINEAR_HOST
+    return LINEAR_APP_HOST
+
+
 def _gmail_base(result: dict) -> str:
     """The base URL for Gmail deep links from a tool result."""
     if result.get("_stub"):
@@ -514,6 +529,29 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                             % (base, ticket["id"]),
                         }
                     )
+    elif tool_name in (
+        "linear_list_issues",
+        "linear_search_issues",
+        "linear_get_issue",
+    ):
+        base = _linear_base(result)
+        if tool_name == "linear_list_issues":
+            issues = result.get("issues", [])
+        elif tool_name == "linear_search_issues":
+            issues = result.get("matches", [])
+        else:
+            issues = [result] if result.get("identifier") else []
+        for issue in issues:
+            team = issue.get("team") or result.get("team")
+            identifier = issue.get("identifier")
+            if team and identifier:
+                links.append(
+                    {
+                        "label": "Linear %s: %s"
+                        % (identifier, issue.get("title", "")),
+                        "url": "%s/%s/issue/%s" % (base, team, identifier),
+                    }
+                )
     return links
 
 
@@ -588,11 +626,11 @@ class RenewalDeskAgent(Agent):
     """Drafts a renewal plan for an account.
 
     Gathers: account health, open renewal opportunity, open support cases,
-    recent Slack signals, and recent email threads. Drafts: account health,
-    risks, next steps, and a message to the customer. The CRM it gathers
-    from is the registry's `crm`: Salesforce by default, HubSpot when
-    HubSpot is configured and Salesforce is not. The proof checklist
-    follows the CRM.
+    recent Slack signals, recent email threads, and open engineering
+    issues. Drafts: account health, risks, next steps, and a message to
+    the customer. The CRM it gathers from is the registry's `crm`:
+    Salesforce by default, HubSpot when HubSpot is configured and
+    Salesforce is not. The proof checklist follows the CRM.
     """
 
     name = "renewal-desk"
@@ -623,6 +661,10 @@ class RenewalDeskAgent(Agent):
             "Cites email threads",
             sources=["gmail_search_messages"],
         ),
+        ProofItem(
+            "Cites open engineering issues",
+            sources=["linear_list_issues"],
+        ),
         ProofItem("Covers account health", keywords=["health"]),
         ProofItem("Lists next steps", keywords=["step"]),
         ProofItem(
@@ -642,6 +684,10 @@ class RenewalDeskAgent(Agent):
         ProofItem(
             "Cites email threads",
             sources=["gmail_search_messages"],
+        ),
+        ProofItem(
+            "Cites open engineering issues",
+            sources=["linear_list_issues"],
         ),
         ProofItem("Covers account health", keywords=["health"]),
         ProofItem("Lists next steps", keywords=["step"]),
@@ -669,14 +715,15 @@ class RenewalDeskAgent(Agent):
             checklist = self.proof_checklist
         calls.append(("slack_search_messages", {"query": account, "limit": 5}))
         calls.append(("gmail_search_messages", {"query": account, "limit": 5}))
+        calls.append(("linear_list_issues", {}))
         context, sources, links = _gather(registry, calls, budget)
         prompt = _build_prompt(
             self.name,
             context,
             "Draft a renewal plan for account %r. Cover: account health, "
-            "the open renewal opportunity, open support cases, any risk "
-            "signals from Slack and email, and the next three steps with "
-            "owners." % account,
+            "the open renewal opportunity, open support cases, open "
+            "engineering issues, any risk signals from Slack and email, "
+            "and the next three steps with owners." % account,
         )
         system = (
             "You are the renewal desk for a customer success team. "
