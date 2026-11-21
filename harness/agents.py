@@ -1,10 +1,10 @@
-"""The specialist agents: the nine post-sales jobs the harness covers.
+"""The specialist agents: the ten post-sales jobs the harness covers.
 
-The nine jobs are the post-sales jobs that matter: scout, briefer,
+The ten jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
-renewal desk, voice-of-customer, and value-finder.
+renewal desk, voice-of-customer, value-finder, and salesforce-updater.
 
-V1 implements nine end to end:
+V1 implements ten end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -32,8 +32,13 @@ V1 implements nine end to end:
   or expanded, gaps not yet captured. Every dollar figure is labeled
   measured or modeled with its basis, and the figures are computed by
   the harness, never by the model.
+- salesforce-updater: drafts Salesforce changes for an account (field
+  changes, activity logs, stage moves) from the account context other
+  agents gathered. The draft carries a dry-run preview (old -> new for
+  every change) and the write plan; nothing executes until a human
+  approves the draft in the queue.
 
-All nine are implemented. Every job in the harness has a working agent.
+All ten are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -63,11 +68,16 @@ from .llm import LLMClient
 from .memory import AccountMemory
 from .registry import ToolRegistry
 from .summarizer import TokenBudget, estimate_tokens
+from .writeback import build_write_plan, format_preview, parse_change_spec
 
 
 @dataclass
 class Draft:
-    """What an agent produced. Always goes to the approval queue next."""
+    """What an agent produced. Always goes to the approval queue next.
+
+    `writes` is the write plan a write draft carries (v1.3.0): the ops
+    the executor runs if, and only if, a human approves the draft.
+    Read-only drafts carry none."""
 
     text: str
     agent: str
@@ -76,6 +86,7 @@ class Draft:
     links: list[dict] = field(default_factory=list)
     tokens_estimate: int = 0
     proof: list[dict] = field(default_factory=list)
+    writes: list[dict] = field(default_factory=list)
 
     @property
     def proof_passed(self) -> bool:
@@ -1976,8 +1987,159 @@ class ValueFinderAgent(Agent):
         )
 
 
+class SalesforceUpdaterAgent(Agent):
+    """Drafts Salesforce changes for an account, approval-gated.
+
+    Gathers: account summary, open opportunities, open support cases.
+    Reads prior drafts from renewal-desk, expansion-spotter, and
+    voice-of-customer out of the approval queue for context on what
+    needs updating. Drafts: field changes, activity logs, and stage
+    moves, from the explicit change specs in the job (--change on the
+    CLI). The draft carries a harness-computed dry-run preview (old ->
+    new for every change) and the machine-readable write plan.
+
+    The agent never calls a write tool: it only reads. The write plan
+    executes only when a human approves the draft in the queue, through
+    the executor in harness/writeback.py. A spec the harness cannot
+    parse, or no specs at all, drafts an explanation with no write
+    plan; the proof checklist flags the missing preview for the human
+    reviewer.
+    """
+
+    name = "salesforce-updater"
+    display_name = "Salesforce Updater"
+    description = (
+        "Drafts Salesforce changes for approval: field changes, activity "
+        "logs, stage moves. Nothing applies until a human approves."
+    )
+    keywords = [
+        "salesforce-updater",
+        "salesforce update",
+        "update salesforce",
+        "update opportunity",
+        "update the account",
+        "field change",
+        "log activity",
+        "activity log",
+        "move stage",
+        "stage move",
+        "updater",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Draft carries the dry-run preview",
+            keywords=["dry-run preview"],
+        ),
+        ProofItem(
+            "Preview shows old and new values",
+            keywords=["->"],
+        ),
+        ProofItem(
+            "Cites the account record",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Cites opportunities",
+            sources=["salesforce_list_opportunities"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+        ]
+        context, sources, links, results = _gather_with_results(
+            registry, calls, budget
+        )
+        context["prior_agent_drafts"] = _prior_drafts(
+            job,
+            account,
+            ("renewal-desk", "expansion-spotter", "voice-of-customer"),
+        )
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        raw_changes = job.get("changes") or []
+        specs: list[dict] = []
+        bad_spec: str | None = None
+        for raw in raw_changes:
+            if isinstance(raw, dict):
+                specs.append(raw)
+                continue
+            try:
+                specs.append(parse_change_spec(str(raw)))
+            except ValueError as exc:
+                bad_spec = str(exc)
+                break
+        if bad_spec is not None:
+            text = (
+                "Could not draft the Salesforce updates for account %r: "
+                "the change spec was not understood (%s). No write plan "
+                "is attached to this draft; re-run with a valid --change "
+                "spec." % (account, bad_spec)
+            )
+            return self._finish(
+                Draft(
+                    text=text,
+                    agent=self.name,
+                    job=job,
+                    sources=sources,
+                    links=links,
+                    tokens_estimate=estimate_tokens(text),
+                )
+            )
+        ops, preview = build_write_plan(specs, results)
+        if preview:
+            requested = "; ".join(preview)
+        else:
+            requested = "none: no changes were requested"
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft the Salesforce updates for account %r. Requested "
+            "changes: %s. For each change, say what record it touches, "
+            "what changes, and why, using only the context and the prior "
+            "agent drafts. Do not invent a change that was not requested "
+            "and do not invent a current value that is not in the "
+            "context." % (account, requested),
+        )
+        system = (
+            "You are the Salesforce updater for a customer success team. "
+            "You draft record changes for a human to approve; you never "
+            "apply anything yourself. Describe each requested change and "
+            "its reason, using only the context. Do not invent changes "
+            "or current values that are not in the context."
+        )
+        text = llm.complete(prompt, system=system)
+        if preview:
+            text = text + "\n\n" + format_preview(preview)
+        else:
+            text = text + (
+                "\n\nNo changes were requested, so there is no write plan "
+                "in this draft."
+            )
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+                writes=ops,
+            )
+        )
+
+
 def build_agents() -> dict[str, Agent]:
-    """All nine agents, keyed by name. All implemented."""
+    """All ten agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -1988,6 +2150,7 @@ def build_agents() -> dict[str, Agent]:
         "advocate-finder": AdvocateFinderAgent(),
         "voice-of-customer": VoiceOfCustomerAgent(),
         "value-finder": ValueFinderAgent(),
+        "salesforce-updater": SalesforceUpdaterAgent(),
     }
     return agents
 

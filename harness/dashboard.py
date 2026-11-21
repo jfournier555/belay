@@ -14,9 +14,9 @@ binds to loopback and reads the same approvals file the CLI uses
 (HARNESS_APPROVALS_FILE, default approvals.json in the working dir).
 
 Approve and reject buttons call the same ApprovalQueue methods the CLI
-uses. Nothing writes back to Salesforce until a human approves it, and
-no live agent writes back today; write-back (v1.3.0) is approval-gated
-by design.
+uses. Nothing writes back to Salesforce until a human approves it.
+Write-back shipped in v1.3.0: the updater agent drafts changes, and
+only an approved write draft executes, through this same queue.
 """
 
 from __future__ import annotations
@@ -159,7 +159,7 @@ def source_statuses(config: Config) -> list[dict]:
 
 
 def agent_states(queue: ApprovalQueue) -> list[dict]:
-    """Right rail: the 9 agents.
+    """Right rail: the 10 agents.
 
     Last-run state comes from the queue: the newest draft each agent
     produced, and when. An agent with no drafts has never run.
@@ -259,6 +259,9 @@ def queue_view(queue: ApprovalQueue) -> list[dict]:
                 "created_at": item.created_at,
                 "decided_at": item.decided_at,
                 "note": item.note,
+                "writes": item.writes or [],
+                "execution": item.execution or [],
+                "executed_at": item.executed_at,
             }
         )
     return view
@@ -309,10 +312,21 @@ def create_app(
 
     @app.post("/api/approvals/{item_id}/approve")
     def approve(item_id: str) -> JSONResponse:
+        q = get_queue()
         try:
-            item = get_queue().approve(item_id)
+            item = q.approve(item_id)
         except KeyError:
             raise HTTPException(status_code=404, detail="Unknown approval item")
+        if item.writes:
+            # Approval-gated execution (v1.3.0): the dashboard approves
+            # through the same executor as the CLI, so a write draft
+            # approved here applies exactly as one approved in the CLI
+            # would. Lazy import: run.py imports the dashboard lazily,
+            # so the dashboard must not import it at module load.
+            from harness.run import build_registry
+            from harness.writeback import execute_writes
+
+            execute_writes(q, build_registry(cfg), item)
         return JSONResponse(item.to_dict())
 
     @app.post("/api/approvals/{item_id}/reject")

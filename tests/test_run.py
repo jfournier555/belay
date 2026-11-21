@@ -34,18 +34,18 @@ class TestCli(unittest.TestCase):
         for command in ("run", "agents", "tools", "approvals", "dashboard", "memory"):
             self.assertIn(command, buf.getvalue())
 
-    def test_agents_lists_nine_implemented(self):
+    def test_agents_lists_ten_implemented(self):
         code, out = self._run(["agents"])
         self.assertEqual(code, 0)
         lines = [line for line in out.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 9)
+        self.assertEqual(len(lines), 10)
         self.assertTrue(all("implemented" in line for line in lines))
 
     def test_tools_lists_all_connector_tools_in_stub(self):
         code, out = self._run(["tools", "--stub"])
         self.assertEqual(code, 0)
         lines = [line for line in out.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 26)
+        self.assertEqual(len(lines), 29)
         for prefix in (
             "salesforce_",
             "slack_",

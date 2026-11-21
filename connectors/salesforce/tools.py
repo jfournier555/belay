@@ -4,6 +4,24 @@ Tools exposed (both in-process and as MCP tools via server.py):
 - salesforce_get_account: account summary (ARR, renewal date, health, owner).
 - salesforce_list_opportunities: open opportunities for the account.
 - salesforce_list_cases: open support cases for the account.
+- salesforce_update_fields (v1.3.0, WRITE): field changes on an
+  account or opportunity. Approval-gated: never called by an agent.
+- salesforce_log_activity (v1.3.0, WRITE): activity log entry on a
+  record. Approval-gated: never called by an agent.
+- salesforce_move_stage (v1.3.0, WRITE): opportunity stage move.
+  Approval-gated: never called by an agent.
+
+Write tools (v1.3.0): the only caller is the approval-gated executor
+in harness/writeback.py, which runs them after a human approves the
+draft that carries them. An agent never calls a write tool while
+gathering; the updater agent drafts the change, the draft sits in the
+approval queue, and only an approved draft executes. In stub mode a
+write tool simulates the write and reports exactly what would change,
+without changing anything: the stub result carries "simulated": true
+and "applied": false, so a demo or a test can never mistake a
+simulation for a real change. Live writes use the Salesforce REST API
+(PATCH/POST against /services/data/v59.0/sobjects/), written against
+the documented API but NOT tested against a live org.
 
 Two modes:
 - Live: uses the Salesforce REST API (SOQL) with an OAuth access token.
@@ -199,8 +217,140 @@ def list_cases(config: Config, account: str) -> dict:
     }
 
 
+def _sobjects_url(config: Config, path: str) -> str:
+    """Base URL for a Salesforce sobjects REST call. Live path only."""
+    return config.salesforce_instance_url.rstrip("/") + "/services/data/v59.0/sobjects/" + path
+
+
+def _live_headers(config: Config) -> dict:
+    return {
+        "Authorization": "Bearer " + config.salesforce_access_token,
+        "Content-Type": "application/json",
+    }
+
+
+def update_fields(config: Config, object: str, record_id: str, fields: dict) -> dict:
+    """Change fields on one Salesforce record (Account, Opportunity, ...).
+
+    Write tool (v1.3.0): call only through the approval-gated executor
+    in harness/writeback.py, after a human approves the draft carrying
+    the change. In stub mode this simulates the write: it reports what
+    would change and changes nothing.
+    """
+    if not isinstance(fields, dict) or not fields:
+        return {"error": "update_fields needs a non-empty fields dict."}
+    if not config.salesforce_configured():
+        return {
+            "_stub": True,
+            "simulated": True,
+            "applied": False,
+            "object": object,
+            "record_id": record_id,
+            "would_change": dict(fields),
+        }
+    url = _sobjects_url(config, "%s/%s" % (object, record_id))
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.patch(url, json=fields, headers=_live_headers(config))
+        resp.raise_for_status()
+    return {
+        "applied": True,
+        "object": object,
+        "record_id": record_id,
+        "fields": dict(fields),
+    }
+
+
+def log_activity(
+    config: Config,
+    record_id: str,
+    subject: str,
+    description: str | None = None,
+    activity_type: str = "Task",
+) -> dict:
+    """Log an activity entry on a Salesforce record (a Task, WhatId =
+    the record). The entry is marked Completed with today's date.
+
+    Write tool (v1.3.0): call only through the approval-gated executor
+    in harness/writeback.py. In stub mode this simulates the log entry
+    and creates nothing.
+    """
+    if not subject:
+        return {"error": "log_activity needs a subject."}
+    if not config.salesforce_configured():
+        return {
+            "_stub": True,
+            "simulated": True,
+            "applied": False,
+            "record_id": record_id,
+            "would_create": {
+                "object": "Task",
+                "subject": subject,
+                "description": description,
+                "activity_type": activity_type,
+            },
+        }
+    from datetime import date
+
+    body = {
+        "Subject": subject,
+        "WhatId": record_id,
+        "Status": "Completed",
+        "ActivityDate": date.today().isoformat(),
+        "Type": activity_type,
+    }
+    if description:
+        body["Description"] = description
+    url = _sobjects_url(config, "Task")
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.post(url, json=body, headers=_live_headers(config))
+        resp.raise_for_status()
+        created = resp.json()
+    return {
+        "applied": True,
+        "record_id": created.get("id"),
+        "subject": subject,
+        "related_to": record_id,
+    }
+
+
+def move_stage(config: Config, record_id: str, stage: str) -> dict:
+    """Move an opportunity to a new stage (sets StageName).
+
+    Write tool (v1.3.0): call only through the approval-gated executor
+    in harness/writeback.py. In stub mode this simulates the move and
+    changes nothing.
+    """
+    if not stage:
+        return {"error": "move_stage needs a stage name."}
+    if not config.salesforce_configured():
+        return {
+            "_stub": True,
+            "simulated": True,
+            "applied": False,
+            "object": "Opportunity",
+            "record_id": record_id,
+            "would_change": {"StageName": stage},
+        }
+    url = _sobjects_url(config, "Opportunity/%s" % record_id)
+    with httpx.Client(timeout=30.0) as client:
+        resp = client.patch(
+            url, json={"StageName": stage}, headers=_live_headers(config)
+        )
+        resp.raise_for_status()
+    return {
+        "applied": True,
+        "object": "Opportunity",
+        "record_id": record_id,
+        "stage": stage,
+    }
+
+
 def salesforce_tools(config: Config) -> list[Tool]:
-    """The three Salesforce tools, bound to this config, for the registry."""
+    """The Salesforce tools, bound to this config, for the registry.
+
+    The first three are read tools. The last three are write tools
+    (write=True): the registry lists them, but no agent calls them
+    while gathering; only the approval-gated executor runs them."""
     return [
         Tool(
             name="salesforce_get_account",
@@ -240,5 +390,73 @@ def salesforce_tools(config: Config) -> list[Tool]:
                 "required": ["account"],
             },
             handler=lambda account: list_cases(config, account),
+        ),
+        Tool(
+            name="salesforce_update_fields",
+            description=(
+                "WRITE TOOL (v1.3.0, approval-gated): change fields on one "
+                "Salesforce record. Takes object (e.g. Opportunity), "
+                "record_id, and fields (a dict of field names to new "
+                "values). Never called by an agent; only the executor runs "
+                "it after a human approves the draft carrying the change."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "object": {"type": "string"},
+                    "record_id": {"type": "string"},
+                    "fields": {"type": "object"},
+                },
+                "required": ["object", "record_id", "fields"],
+            },
+            handler=lambda object, record_id, fields: update_fields(
+                config, object, record_id, fields
+            ),
+            write=True,
+        ),
+        Tool(
+            name="salesforce_log_activity",
+            description=(
+                "WRITE TOOL (v1.3.0, approval-gated): log an activity entry "
+                "on a Salesforce record. Takes record_id, subject, and "
+                "optionally description and activity_type. Never called by "
+                "an agent; only the executor runs it after a human approves "
+                "the draft carrying the change."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "record_id": {"type": "string"},
+                    "subject": {"type": "string"},
+                    "description": {"type": "string"},
+                    "activity_type": {"type": "string"},
+                },
+                "required": ["record_id", "subject"],
+            },
+            handler=lambda record_id, subject, description=None, activity_type="Task": log_activity(
+                config, record_id, subject, description, activity_type
+            ),
+            write=True,
+        ),
+        Tool(
+            name="salesforce_move_stage",
+            description=(
+                "WRITE TOOL (v1.3.0, approval-gated): move an opportunity "
+                "to a new stage. Takes record_id and stage. Never called "
+                "by an agent; only the executor runs it after a human "
+                "approves the draft carrying the change."
+            ),
+            parameters={
+                "type": "object",
+                "properties": {
+                    "record_id": {"type": "string"},
+                    "stage": {"type": "string"},
+                },
+                "required": ["record_id", "stage"],
+            },
+            handler=lambda record_id, stage: move_stage(
+                config, record_id, stage
+            ),
+            write=True,
         ),
     ]

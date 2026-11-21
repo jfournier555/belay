@@ -30,13 +30,22 @@ from .summarizer import summarize_tool_result
 
 @dataclass
 class Tool:
-    """One callable tool an agent can use."""
+    """One callable tool an agent can use.
+
+    `write` marks a write tool (v1.3.0): one that changes a record in a
+    connected system instead of reading it. Write tools are never
+    called by an agent during gathering; the only caller is the
+    approval-gated executor in harness/writeback.py, which runs them
+    after a human approves the draft that carries them. The flag is
+    what the executor checks before it calls anything.
+    """
 
     name: str
     description: str
     parameters: dict = field(default_factory=dict)
     handler: Callable[..., dict] | None = None
     summarize: Callable[[dict], dict] | None = None
+    write: bool = False
 
     def run(self, **kwargs) -> dict:
         """Invoke the handler and return the summary form of its result."""

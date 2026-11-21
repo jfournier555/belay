@@ -5,6 +5,7 @@ Usage:
     python -m harness.run run --text "draft a renewal plan for Acme Corp"
     python -m harness.run run --agent briefer --account "Acme Corp" --stub
     python -m harness.run run --agent renewal-desk --account "Acme Corp" --no-memory
+    python -m harness.run run --agent salesforce-updater --account "Acme Corp" --stub --change "stage 006STUB000000001 Closed Won"
     python -m harness.run agents
     python -m harness.run tools
     python -m harness.run approvals list
@@ -59,6 +60,11 @@ from harness import (
     ToolRegistry,
     __version__,
     get_llm,
+)
+from harness.writeback import (
+    execute_writes,
+    format_write_plan,
+    parse_change_spec,
 )
 
 
@@ -137,11 +143,25 @@ def cmd_run(args: argparse.Namespace) -> int:
     job["memory_file"] = config.memory_file
     if args.no_memory:
         job["no_memory"] = True
-    if route.agent in ("value-finder", "qbr-builder"):
+    if route.agent in ("value-finder", "qbr-builder", "salesforce-updater"):
         # Value-finder and qbr-builder read prior drafts from the
         # approval queue (value-finder synthesizes them, qbr-builder
-        # composes from them); the queue path travels with the job.
+        # composes from them); salesforce-updater reads them for
+        # context on what needs updating. The queue path travels with
+        # the job.
         job["approvals_file"] = config.approvals_file
+    if route.agent == "salesforce-updater":
+        # The updater drafts only the changes the job names (--change,
+        # repeatable). A bad spec fails fast here, before the agent
+        # runs, so a typo never becomes a draft.
+        specs = []
+        for raw in args.change or []:
+            try:
+                specs.append(parse_change_spec(raw))
+            except ValueError as exc:
+                print("Bad --change spec %r: %s" % (raw, exc), file=sys.stderr)
+                return 2
+        job["changes"] = specs
     if route.agent == "value-finder":
         # Value-finder quantifies time saved from explicit inputs only:
         # the loaded hourly rate comes from --hourly-rate or
@@ -169,6 +189,7 @@ def cmd_run(args: argparse.Namespace) -> int:
         sources=draft.sources,
         links=draft.links,
         proof=draft.proof,
+        writes=draft.writes,
     )
     print("Draft submitted to the approval queue: %s" % item.id)
     print("Sources: %s" % (", ".join(draft.sources) or "none"))
@@ -190,7 +211,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_agents(_args: argparse.Namespace) -> int:
-    """List the nine agents and whether each is implemented in v1."""
+    """List the ten agents and whether each is implemented in v1."""
     for name in sorted(AGENTS):
         agent = AGENTS[name]
         status = "implemented" if agent.implemented else "planned"
@@ -251,6 +272,17 @@ def cmd_approvals(args: argparse.Namespace) -> int:
                 mark = "PASS" if p.get("passed") else "FAIL"
                 print("  %s: %s (%s)" % (mark, p.get("label"), p.get("detail")))
         print("Job: %s" % json.dumps(item.job))
+        if item.writes:
+            # A write draft shows its plan, so the human sees exactly
+            # what approving will run. Editing the draft text does not
+            # change this plan.
+            print(format_write_plan(item.writes))
+        if item.execution:
+            print("Execution (%s):" % (item.executed_at or "recorded"))
+            for result in item.execution:
+                mark = "APPLIED" if result.get("success") else "FAILED"
+                detail = result.get("error") or result.get("tool")
+                print("  %s: op %s (%s)" % (mark, result.get("op_index"), detail))
         print("--- draft ---")
         print(item.draft)
         print("--- end draft ---")
@@ -258,6 +290,40 @@ def cmd_approvals(args: argparse.Namespace) -> int:
     if args.action == "approve":
         item = queue.approve(args.item_id, note=args.note)
         print("Approved: %s" % item.id)
+        if item.writes:
+            # Approval-gated execution (v1.3.0): only an approved write
+            # draft executes, and only through the executor. The plan
+            # prints first, so the human sees what is about to run.
+            print(format_write_plan(item.writes))
+            registry = build_registry(config)
+            results = execute_writes(queue, registry, item)
+            for result in results:
+                if result.get("skipped"):
+                    print(
+                        "  Already applied op %s (%s), not re-run"
+                        % (result.get("op_index"), result.get("tool"))
+                    )
+                elif result.get("success"):
+                    print(
+                        "  Applied op %s (%s)"
+                        % (result.get("op_index"), result.get("tool"))
+                    )
+                else:
+                    print(
+                        "  FAILED op %s (%s): %s"
+                        % (
+                            result.get("op_index"),
+                            result.get("tool"),
+                            result.get("error"),
+                        )
+                    )
+            if any(not r.get("success") for r in results):
+                print(
+                    "Some writes failed; the applied ones will not run "
+                    "again. Approve again to retry the failed ones.",
+                    file=sys.stderr,
+                )
+                return 1
         return 0
     if args.action == "reject":
         item = queue.reject(args.item_id, note=args.note)
@@ -333,10 +399,11 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--show", action="store_true", help="Print the draft after queueing it.")
     run_p.add_argument("--hourly-rate", type=float, default=None, help="Loaded hourly rate in dollars, for value-finder (overrides HARNESS_LOADED_HOURLY_RATE).")
     run_p.add_argument("--hours-saved", type=float, default=None, help="Hours saved by automation, for value-finder (supplied by the CSM; never assumed).")
+    run_p.add_argument("--change", action="append", default=None, help="Change for salesforce-updater, repeatable. Forms: 'update <Object> <id> <Field>=<value>[, ...]', 'stage <id> <StageName>', 'log <id> <Subject> [| <Description>]'.")
     run_p.add_argument("--no-memory", action="store_true", help="Run cold: do not load the account's memory as context.")
     run_p.set_defaults(func=cmd_run)
 
-    agents_p = sub.add_parser("agents", help="List the nine agents.")
+    agents_p = sub.add_parser("agents", help="List the ten agents.")
     agents_p.set_defaults(func=cmd_agents)
 
     tools_p = sub.add_parser("tools", help="List registered connector tools.")

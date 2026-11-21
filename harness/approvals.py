@@ -25,7 +25,16 @@ def _now_iso() -> str:
 
 @dataclass
 class ApprovalItem:
-    """One draft waiting for (or having received) a human decision."""
+    """One draft waiting for (or having received) a human decision.
+
+    `writes` is the machine-readable write plan a write draft carries
+    (v1.3.0): the ops the executor runs if the draft is approved.
+    Editing the draft text does NOT change the write plan; to change
+    what will execute, re-run the agent that drafted it. `execution`
+    is the recorded result of running the plan (one result per op, in
+    plan order), and `executed_at` is when the plan last ran. A draft
+    with no writes has both empty: read-only drafts execute nothing.
+    """
 
     id: str
     agent: str
@@ -38,6 +47,9 @@ class ApprovalItem:
     created_at: str = field(default_factory=_now_iso)
     decided_at: str | None = None
     note: str | None = None
+    writes: list[dict] = field(default_factory=list)
+    execution: list[dict] = field(default_factory=list)
+    executed_at: str | None = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -56,6 +68,9 @@ class ApprovalItem:
             created_at=data.get("created_at", _now_iso()),
             decided_at=data.get("decided_at"),
             note=data.get("note"),
+            writes=data.get("writes", []),
+            execution=data.get("execution", []),
+            executed_at=data.get("executed_at"),
         )
 
 
@@ -109,8 +124,12 @@ class ApprovalQueue:
         sources: list[str] | None = None,
         links: list[dict] | None = None,
         proof: list[dict] | None = None,
+        writes: list[dict] | None = None,
     ) -> ApprovalItem:
-        """Put a new draft in the queue as pending. Returns the item."""
+        """Put a new draft in the queue as pending. Returns the item.
+
+        `writes` is the draft's write plan (v1.3.0): the ops the
+        executor runs if, and only if, a human approves the draft."""
         item = ApprovalItem(
             id="appr-" + uuid.uuid4().hex[:8],
             agent=agent,
@@ -119,6 +138,7 @@ class ApprovalQueue:
             sources=list(sources or []),
             links=list(links or []),
             proof=list(proof or []),
+            writes=list(writes or []),
         )
         self._items[item.id] = item
         self._save()
@@ -167,8 +187,27 @@ class ApprovalQueue:
         self._remember(item, status)
         return item
 
+    def record_execution(
+        self, item_id: str, execution: list[dict], executed_at: str
+    ) -> ApprovalItem:
+        """Record the result of running a draft's write plan (v1.3.0).
+        Used by the executor in harness/writeback.py after it runs the
+        plan; it only records, it never decides or executes."""
+        item = self.get(item_id)
+        if item is None:
+            raise KeyError("Unknown approval item: %r" % item_id)
+        item.execution = list(execution)
+        item.executed_at = executed_at
+        self._save()
+        return item
+
     def approve(self, item_id: str, note: str | None = None) -> ApprovalItem:
-        """Mark a draft approved. Only approved drafts leave the harness."""
+        """Mark a draft approved. Only approved drafts leave the harness.
+
+        Approving a write draft (v1.3.0) does not itself execute the
+        write plan: the caller (CLI or dashboard) runs the executor
+        after this returns. The plan executes only from this approved
+        state, and only once per op."""
         return self._decide(item_id, "approved", note)
 
     def reject(self, item_id: str, note: str | None = None) -> ApprovalItem:

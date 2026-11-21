@@ -41,8 +41,8 @@ Missing credentials fall back to stub mode for that connector, so you can connec
 ```
 Job (free text or --agent + --account)
   -> Router (keyword first, small-model LLM only when ambiguous)
-  -> Specialist agent (1 of 9, all implemented: the original 8 in v0.7,
-     value-finder in v0.9.0)
+  -> Specialist agent (1 of 10, all implemented: the original 8 in v0.7,
+     value-finder in v0.9.0, salesforce-updater in v1.3.0)
   -> Tools (9 connectors, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
@@ -62,8 +62,9 @@ Three rules, enforced in code:
 3. **A human reads the draft, not the whole thread.** No agent output is
    sent, posted, or acted on directly. Every draft goes to the approval
    queue first. Nothing writes back to Salesforce until a human approves
-   it. The queue gates writes as well as sends; no live agent writes
-   back today, and write-back (v1.3.0) is approval-gated by design.
+   it. The queue gates writes as well as sends: the updater agent drafts
+   changes, and only an approved write draft executes, through the
+   executor in harness/writeback.py. Rejected drafts never execute.
 
 ## Proof checklist
 
@@ -102,7 +103,7 @@ python -m harness.run run --text "draft a renewal plan for Acme Corp" --stub
 # HARNESS_LOADED_HOURLY_RATE in the environment.
 python -m harness.run run --agent value-finder --account "Acme Corp" --stub --hourly-rate 150 --hours-saved 10 --show
 
-# See the nine agents and the registered tools.
+# See the ten agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
 
@@ -131,7 +132,7 @@ Then run without `--stub`:
 python -m harness.run run --agent renewal-desk --account "Acme Corp"
 ```
 
-## The nine agents
+## The ten agents
 
 Each agent owns one job, not a schedule. Cadence is the scheduler
 (v1.4.0), a separate architecture piece.
@@ -147,6 +148,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | advocate-finder | implemented | Finds champions and advocates: who uses it most, who praises it, how much influence each carries, and which champions changed jobs. |
 | voice-of-customer | implemented | Summarizes customer feedback: requests, pain points, sentiment. |
 | value-finder | implemented | Finds realized and unrealized outcomes in money or time: time saved, revenue protected, gaps not yet captured. Every dollar figure is labeled measured or modeled with its basis. |
+| salesforce-updater | implemented | Drafts Salesforce changes for approval: field changes, activity logs, stage moves. The draft carries a dry-run preview (old -> new) and the write plan; nothing applies until a human approves it. |
 
 ## Composition
 
@@ -187,6 +189,38 @@ python -m harness.run memory clear "Acme Corp"
 python -m harness.run memory accounts
 ```
 
+## Write-back
+
+The first write tools plus approval-gated execution. The updater agent
+drafts Salesforce changes for an account (field changes, activity logs,
+stage moves) from the account context other agents gathered. The draft
+carries a harness-computed dry-run preview (old -> new for every
+change) and the machine-readable write plan. Nothing executes until a
+human approves the draft in the queue; the executor in
+harness/writeback.py then runs the plan, exactly once per change, and
+records the result on the draft. A rejected draft never executes. A
+failed change can be retried by approving again; a change that already
+applied is never run twice, so an activity log is never created twice.
+
+```bash
+# Draft a stage move and an activity log (stub mode: simulated, nothing changes).
+python -m harness.run run --agent salesforce-updater --account "Acme Corp" --stub \
+  --change "stage 006STUB000000001 Closed Won" \
+  --change "log 001STUB000000001 Call with Acme Corp | Discussed renewal" --show
+
+# Review the preview, then approve: the write applies and is recorded.
+python -m harness.run approvals show <id>
+python -m harness.run approvals approve <id>
+```
+
+Changes are named explicitly with `--change`, repeatable:
+`update <Object> <id> <Field>=<value>[, ...]`, `stage <id>
+<StageName>`, `log <id> <Subject> [| <Description>]`. In stub mode a
+write reports what would change and changes nothing; the result is
+marked simulated, so a demo can never be mistaken for a real change.
+Editing a write draft's text does not change its write plan; to change
+what will execute, re-run the updater.
+
 ## Dashboard
 
 The dashboard is the UI the CSM operates from. It reads the live
@@ -215,7 +249,7 @@ agent candidates below.
 | dashboard | v0.8.0 (shipped) | Local web UI over the live approval queue: stat strip, queue with completeness checks, source links, and approve/reject, sources, agents, event log, token budget. Pulled forward ahead of v1.0.0 at Justin's Nov 20 decision. |
 | composition | v1.1.0 (shipped) | Agents build on each other's outputs; the QBR is built from renewal-desk, expansion-spotter, and voice-of-customer drafts, falling back to direct gathering when no prior drafts exist. |
 | memory | v1.2.0 (shipped) | Persistent memory across runs: past drafts, decisions, and corrections per account, injected as context next run, bounded by the token budget. Capture in the approval queue; edits store the correction itself. Local only, never crosses accounts. |
-| write-back | v1.3.0 | The first write tools plus approval-gated execution. The Salesforce updater agent is the first use. |
+| write-back | v1.3.0 (shipped) | The first write tools plus approval-gated execution. The Salesforce updater agent drafts field changes, activity logs, and stage moves; only an approved write draft executes, exactly once per change. |
 | scheduling | v1.4.0 | A daemon that runs the harness on its own, so watch agents actually watch. |
 | MCP client | v1.5.0 | A harness-side MCP client that picks up MCP servers the user already has connected. |
 
@@ -266,13 +300,17 @@ and shared, so the cutover is a client, not a rewrite.
 
 ## What is real vs scaffolded (v1.0.0 honesty)
 
-**Real, tested (253 unit tests, all passing):**
+**Real, tested (324 unit tests, all passing):**
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- All nine agents, end to end, in stub mode: renewal desk, briefer,
+- All ten agents, end to end, in stub mode: renewal desk, briefer,
   expansion spotter, onboarding guide, scout, qbr builder, advocate
-  finder, voice of customer, and value finder.
+  finder, voice of customer, value finder, and Salesforce updater.
+- Write-back: the updater agent drafts changes with a harness-computed
+  dry-run preview; only an approved write draft executes, exactly once
+  per change, and rejected drafts never execute; stub writes simulate
+  and change nothing.
 - Proof checklist: every agent self-checks its draft against a "done"
   checklist before queueing, and every draft carries clickable deep
   links to the records it cites; failures are flagged in the draft
@@ -291,13 +329,17 @@ and shared, so the cutover is a client, not a rewrite.
 - The live Salesforce REST/SOQL calls, the live Slack Web API calls,
   the live Gong REST API calls, the live HubSpot CRM API calls, the
   live Gmail API calls, the live Zoom API calls, the live Zendesk API
-  calls, the live Linear GraphQL API calls, and the live Champify API calls. They are real code, written against the
-  documented APIs, but no credentials were available while building
-  v0.2 (Salesforce/Slack), v0.8.2 (Gong), v0.8.3 (HubSpot), v0.8.4
-  (Gmail), v0.8.5 (Zoom), v0.8.6 (Zendesk), v0.8.7 (Linear), or v0.8.8 (Champify), so they have not run against a real org, workspace, Gong
-  account, HubSpot portal, mailbox, Zoom account, Zendesk instance, Linear workspace, or Champify account. Treat them as "written,
-  not verified" until someone runs them with real credentials. Stub mode
-  is what runs in the demo and the tests. One caveat, for Champify only:
+  calls, the live Linear GraphQL API calls, the live Champify API calls,
+  and the live Salesforce write calls (PATCH for field changes and
+  stage moves, POST for activity logs). They are real code, written
+  against the documented APIs, but no credentials were available while
+  building v0.2 (Salesforce/Slack), v0.8.2 (Gong), v0.8.3 (HubSpot),
+  v0.8.4 (Gmail), v0.8.5 (Zoom), v0.8.6 (Zendesk), v0.8.7 (Linear),
+  v0.8.8 (Champify), or v1.3.0 (Salesforce writes), so they have not run
+  against a real org, workspace, Gong account, HubSpot portal, mailbox,
+  Zoom account, Zendesk instance, Linear workspace, or Champify account.
+  Treat them as "written, not verified" until someone runs them with
+  real credentials. Stub mode is what runs in the demo and the tests. One caveat, for Champify only:
   Champify publishes no public API reference, so its endpoint shapes
   are assumed from the product's data model, not from documentation,
   and must be corrected against the real API the first time a key is

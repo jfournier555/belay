@@ -11,7 +11,7 @@ Public surface:
 - ToolRegistry: the tools agents may call, summary-first (registry.py).
 - ApprovalQueue: file-backed human review queue (approvals.py).
 - AccountMemory: per-account memory across runs (memory.py).
-- AGENTS: the nine specialist agents, all implemented (agents.py).
+- AGENTS: the ten specialist agents, all implemented (agents.py).
 - TokenBudget: per-job token budget enforcement (summarizer.py).
 """
 
@@ -47,4 +47,4 @@ __all__ = [
     "get_llm",
 ]
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
