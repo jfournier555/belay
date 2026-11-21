@@ -8,6 +8,34 @@ Post-sales is a hard climb. Every account is a steep peak: the renewal, the expa
 
 Belay is the sequel to ["AI is taking the admin. The judgment is the job."](https://jfournier.net/articles/ai-admin-judgment/): the article's "the wiring is the job" productized.
 
+## First run
+
+```bash
+git clone https://github.com/jfournier555/belay.git
+cd belay
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+pip install -e .
+cp .env.example .env
+```
+
+Python 3.11 or newer. The demo needs no credentials and no network: stub data plus the stub LLM.
+
+```bash
+python -m harness.run run --agent renewal-desk --account "Acme Corp" --stub --show
+```
+
+The account is the unit: every run names one account, and every agent works from it. Connect each source once in `.env`; there is no per-agent or per-subaccount setup, subaccounts follow the account hierarchy in your CRM.
+
+To go live, fill in `.env` with the credentials you have, starting with Salesforce and Slack, then run without `--stub`:
+
+```bash
+python -m harness.run run --agent renewal-desk --account "Acme Corp"
+```
+
+Missing credentials fall back to stub mode for that connector, so you can connect one source at a time.
+
 ## How it works
 
 ```
