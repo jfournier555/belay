@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "belay"
-version = "1.14.0"
+version = "1.15.0"
 description = "The chassis around the model for post-sales teams: router, tools, approvals. Model-agnostic, MCP-based, low token use."
 readme = "README.md"
 license = { text = "MIT" }

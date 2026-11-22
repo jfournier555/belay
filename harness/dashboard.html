@@ -156,6 +156,7 @@
     max-height: 180px; overflow-y: auto;
   }
   form.inline { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; margin-top: 12px; }
+  .prompt-input { flex: 1; min-width: 240px; }
   form.inline label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; color: var(--muted); }
   input, select, textarea {
     font: inherit; font-size: 13px; color: var(--text);
@@ -203,6 +204,15 @@
   <button data-view="agents">Agents</button>
 </nav>
 <main>
+  <div class="card" id="prompt-card">
+    <h2>Ask Belay</h2>
+    <form class="inline" id="prompt-form">
+      <input id="prompt-input" class="prompt-input" placeholder="draft a renewal brief for Acme Corp" autocomplete="off">
+      <button type="submit" class="approve">Run</button>
+    </form>
+    <div class="form-error" id="prompt-error"></div>
+    <div class="note" id="prompt-result"></div>
+  </div>
   <div id="first-run"></div>
   <section class="view active" id="view-overview">
     <section class="stats" id="stats"></section>
@@ -679,6 +689,30 @@ function renderMcp(state) {
     });
   });
 }
+document.getElementById("prompt-form").addEventListener("submit", async function (ev) {
+  ev.preventDefault();
+  var form = ev.target;
+  var input = document.getElementById("prompt-input");
+  var errEl = document.getElementById("prompt-error");
+  var resEl = document.getElementById("prompt-result");
+  var btn = form.querySelector("button[type=submit]");
+  errEl.textContent = "";
+  resEl.textContent = "";
+  var text = input.value.trim();
+  if (!text) { errEl.textContent = "Type a prompt first."; return; }
+  btn.disabled = true;
+  try {
+    var res = await api("/api/prompt",
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: text }) });
+    resEl.textContent = "Routed to " + res.agent + " for " + res.account +
+      " — draft queued (" + res.item.id + ").";
+    input.value = "";
+    document.querySelector('#nav button[data-view="queue"]').click();
+  } catch (e) { errEl.textContent = e.message; btn.disabled = false; return; }
+  btn.disabled = false;
+  loadState();
+});
 document.getElementById("schedule-form").addEventListener("submit", async function (ev) {
   ev.preventDefault();
   var form = ev.target;

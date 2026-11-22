@@ -42,6 +42,11 @@ from .config import Config
 from .escalations import EscalationStore
 from .mcp_client import MCPClient, MCPServerStore
 from .memory import AccountMemory
+from .prompt import (
+    AmbiguousAccountError,
+    UnknownAccountError,
+    run_prompt,
+)
 from .scheduler import (
     ScheduleStore,
     _parse_iso,
@@ -253,6 +258,27 @@ def token_budget_state(queue: ApprovalQueue, config: Config) -> dict:
     }
 
 
+def _queue_item_dict(item) -> dict:
+    """One queue item, as the page renders it."""
+    return {
+        "id": item.id,
+        "agent": item.agent,
+        "account": _extract_account(item.job),
+        "job": item.job,
+        "draft": item.draft,
+        "sources": item.sources,
+        "links": item.links or [],
+        "proof": item.proof or [],
+        "status": item.status,
+        "created_at": item.created_at,
+        "decided_at": item.decided_at,
+        "note": item.note,
+        "writes": item.writes or [],
+        "execution": item.execution or [],
+        "executed_at": item.executed_at,
+    }
+
+
 def queue_view(queue: ApprovalQueue) -> list[dict]:
     """The approval queue, hero of the page: pending drafts first."""
     items = queue.list_all()
@@ -261,28 +287,7 @@ def queue_view(queue: ApprovalQueue) -> list[dict]:
     ordered = sorted(pending, key=lambda i: i.created_at) + sorted(
         decided, key=lambda i: i.created_at, reverse=True
     )
-    view = []
-    for item in ordered:
-        view.append(
-            {
-                "id": item.id,
-                "agent": item.agent,
-                "account": _extract_account(item.job),
-                "job": item.job,
-                "draft": item.draft,
-                "sources": item.sources,
-                "links": item.links or [],
-                "proof": item.proof or [],
-                "status": item.status,
-                "created_at": item.created_at,
-                "decided_at": item.decided_at,
-                "note": item.note,
-                "writes": item.writes or [],
-                "execution": item.execution or [],
-                "executed_at": item.executed_at,
-            }
-        )
-    return view
+    return [_queue_item_dict(item) for item in ordered]
 
 
 def build_state(
@@ -539,6 +544,46 @@ def create_app(
                 escalations=get_escalations(),
                 mcp_servers=get_mcp_servers(),
             )
+        )
+
+    @app.post("/api/prompt")
+    def run_prompt_endpoint(body: dict) -> JSONResponse:
+        # Prompt window (v1.15.0): free text in, queued draft out. The
+        # run goes through the same execution path as a CLI run, so the
+        # draft carries its proof checklist and the approval gate is
+        # unchanged. An unresolvable or ambiguous account is a 400
+        # with a plain message, never a draft for the wrong account.
+        text = str(body.get("text", "") or "").strip()
+        if not text:
+            raise HTTPException(status_code=400, detail="Prompt needs some text")
+        try:
+            result = run_prompt(
+                cfg,
+                text,
+                queue=get_queue(),
+                memory=get_memory(),
+                schedules=get_schedules(),
+            )
+        except AmbiguousAccountError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Ambiguous account: %s. Name one account."
+                % ", ".join(exc.candidates),
+            )
+        except UnknownAccountError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        except NotImplementedError as exc:
+            raise HTTPException(status_code=500, detail=str(exc))
+        return JSONResponse(
+            {
+                "item": _queue_item_dict(result["item"]),
+                "agent": result["agent"],
+                "display_name": result["display_name"],
+                "route": result["route"],
+                "account": result["account"],
+            }
         )
 
     @app.post("/api/approvals/{item_id}/approve")
