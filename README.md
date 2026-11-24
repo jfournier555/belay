@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v1.16.0**, 15 agents, 10 connectors, 689 tests green.
+**A post sales AI harness.** Current version: **v1.17.0**, 15 agents, 10 connectors, 689 tests green.
 
 ![Belay: AI that does the post-sales busywork. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -13,7 +13,7 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 Download one file, no Python, no terminal:
 
 - **Windows:** `belay.exe` from the [latest release](https://github.com/jfournier555/belay/releases). Double-click it: it starts the dashboard and opens it in your browser.
-- **macOS:** `Belay-macos.zip` from the [latest release](https://github.com/jfournier555/belay/releases). Unzip it, double-click `Belay.app`. It starts the dashboard and opens it in your browser, no Terminal.
+- **macOS:** `Belay-macos.dmg` from the [latest release](https://github.com/jfournier555/belay/releases). Double-click it, then drag `Belay.app` to Applications. It starts the dashboard and opens it in your browser, no Terminal.
 - **Linux:** `belay-linux` from the [latest release](https://github.com/jfournier555/belay/releases). `chmod +x belay-linux`, then `./belay-linux`: it starts the dashboard and opens it in your browser. The first run also creates a Belay launcher in the applications menu, which is the double-click path: double-clicking the bare binary in a file manager does not run it (on KDE/Dolphin it shows a "Choose Application" dialog instead), so use the launcher or the terminal route.
 
 A bare `belay` with no arguments opens the dashboard the same way. `belay launch` does it explicitly, from any terminal. The CLI (`run`, `approvals`, `setup --wizard`, and the rest) stays as the power-user path.

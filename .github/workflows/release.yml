@@ -13,12 +13,12 @@
 #
 # Per-OS artifacts (one file each):
 # - Windows: belay.exe (the bare executable)
-# - macOS:   Belay-macos.zip (contains Belay.app; a zip is how a .app
-#            bundle ships as a release asset). The .app is a thin
-#            launcher: double-clicking it runs `belay launch`, which
-#            starts the dashboard and opens it in the browser, with
-#            no terminal. First-run setup happens in the dashboard
-#            Settings view.
+# - macOS:   Belay-macos.dmg (a disk image holding Belay.app plus an
+#            Applications symlink, the standard drag-to-Applications
+#            install). The .app is a thin launcher: double-clicking it
+#            runs `belay launch`, which starts the dashboard and opens
+#            it in the browser, with no terminal. First-run setup
+#            happens in the dashboard Settings view.
 # - Linux:   belay-linux (the bare executable, chmod +x)
 name: Release
 
@@ -38,7 +38,7 @@ jobs:
           - os: windows-latest
             artifact: belay.exe
           - os: macos-latest
-            artifact: Belay-macos.zip
+            artifact: Belay-macos.dmg
           - os: ubuntu-latest
             artifact: belay-linux
     runs-on: ${{ matrix.os }}
@@ -100,7 +100,11 @@ jobs:
           </dict>
           </plist>
           EOF
-          ditto -c -k --keepParent Belay.app Belay-macos.zip
+          rm -rf dmg-staging
+          mkdir -p dmg-staging
+          ditto Belay.app dmg-staging/Belay.app
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname Belay -srcfolder dmg-staging -ov -format UDZO Belay-macos.dmg
       - name: Package (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -123,6 +127,6 @@ jobs:
         with:
           files: |
             artifacts/belay.exe
-            artifacts/Belay-macos.zip
+            artifacts/Belay-macos.dmg
             artifacts/belay-linux
           generate_release_notes: true

@@ -59,7 +59,7 @@ class TestReleaseWorkflow(unittest.TestCase):
         )
         self.assertEqual(
             sorted(entry["artifact"] for entry in include),
-            ["Belay-macos.zip", "belay-linux", "belay.exe"],
+            ["Belay-macos.dmg", "belay-linux", "belay.exe"],
         )
 
     def test_build_uses_the_spec(self):
@@ -79,7 +79,7 @@ class TestReleaseWorkflow(unittest.TestCase):
         for step in steps:
             files += str(step.get("with", {}).get("files", ""))
         self.assertIn("belay.exe", files)
-        self.assertIn("Belay-macos.zip", files)
+        self.assertIn("Belay-macos.dmg", files)
         self.assertIn("belay-linux", files)
 
     def test_macos_app_launches_dashboard_without_terminal(self):
