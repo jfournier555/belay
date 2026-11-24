@@ -15,9 +15,14 @@ Account resolution, in order:
    name one account.
 2. The router's existing rule: the words after the last "for" in the
    text. A brand-new account comes in this way.
-3. Otherwise the account is unknown, and the prompt is refused with a
-   plain message instead of guessing: a draft for the wrong account is
-   worse than no draft.
+3. Otherwise the account is unknown, and the prompt is NOT refused
+   (v1.16.0): a cross-account question is answered from the queue and
+   memory data Belay already has ("what account has most risk" is
+   answered from the risk-watcher drafts in the queue), and anything
+   else comes back as a needs-account reply that asks which account,
+   with a working example, instead of an error. A draft is never
+   queued for the wrong account, and a question that genuinely needs
+   one is asked, not refused.
 """
 
 from __future__ import annotations
@@ -113,26 +118,183 @@ def run_prompt(
     Resolves the account from the text, then hands the job to
     `execute_job`: the router picks the agent, the agent drafts, the
     draft lands in the approval queue with its proof checklist. Raises
-    ValueError on empty text or a routing failure, UnknownAccountError
-    when no account resolves, AmbiguousAccountError when two accounts
-    tie. Returns the queued item, the agent, the route, and the
-    account.
+    ValueError on empty text or a routing failure.
+
+    The result always carries "kind":
+    - "draft": the prompt ran an agent; "item", "agent",
+      "display_name", "route", "account" as before.
+    - "answer": a cross-account question answered from the queue and
+      memory data, with no agent run and no new draft; "answer",
+      "accounts", "item_ids".
+    - "needs_account": the prompt names no account and the question
+      cannot be answered without one; "message" asks which account,
+      with a working "example", and "known_accounts" lists the
+      accounts Belay knows. No draft is queued. The caller shows
+      this in place instead of an error: asking is not refusing.
     """
     text = (text or "").strip()
     if not text:
         raise ValueError("Prompt needs some text")
-    known = known_accounts(
-        queue if queue is not None else ApprovalQueue(config.approvals_file),
-        memory if memory is not None else AccountMemory(config.memory_file),
-        schedules if schedules is not None else ScheduleStore(config.schedules_file),
+    queue = queue if queue is not None else ApprovalQueue(config.approvals_file)
+    memory = memory if memory is not None else AccountMemory(config.memory_file)
+    schedules = (
+        schedules if schedules is not None else ScheduleStore(config.schedules_file)
     )
-    account = resolve_account(text, known)
+    known = known_accounts(queue, memory, schedules)
+    try:
+        account = resolve_account(text, known)
+    except AmbiguousAccountError as exc:
+        return {
+            "kind": "needs_account",
+            "message": (
+                "I can't tell which account you mean: %s. "
+                "Name one account."
+                % " and ".join(exc.candidates)
+            ),
+            "candidates": exc.candidates,
+            "known_accounts": sorted(known),
+            "example": "draft a renewal brief for %s" % exc.candidates[0],
+        }
+    except UnknownAccountError:
+        answer = answer_cross_account(text, queue, memory)
+        if answer is not None:
+            return answer
+        return {
+            "kind": "needs_account",
+            "message": (
+                "I don't know which account you mean. Name the "
+                "account, and I'll draft for it."
+            ),
+            "known_accounts": sorted(known),
+            "example": (
+                "draft a renewal brief for %s"
+                % (sorted(known)[0] if known else "Acme Corp")
+            ),
+        }
     job = {"text": text, "account": account}
     item, _draft, agent, route = execute_job(config, job)
     return {
+        "kind": "draft",
         "item": item,
         "agent": agent.name,
         "display_name": agent.display_name,
         "route": {"confidence": route.confidence, "reason": route.reason},
         "account": account,
     }
+
+
+# ---------------------------------------------------------------------------
+# Cross-account questions: answered from data Belay already has.
+# ---------------------------------------------------------------------------
+
+_RISK_WORDS = ("risk", "at-risk", "at risk", "churn", "riskiest")
+_ACCOUNT_LIST_WORDS = ("which accounts", "list accounts", "what accounts")
+
+
+def _risk_answer(text: str, queue: ApprovalQueue) -> dict | None:
+    """Answer a risk question from the risk-watcher drafts in the
+    queue. The account with the most risk-watcher drafts is the one
+    with the most risk signals; renewal-desk drafts pending are the
+    other at-risk work. Returns None when the text is not a risk
+    question."""
+    lowered = text.lower()
+    if not any(word in lowered for word in _RISK_WORDS):
+        return None
+    items = queue.list_all()
+    risk_items = [item for item in items if item.agent == "risk-watcher"]
+    renewal_items = [
+        item
+        for item in items
+        if item.agent == "renewal-desk" and item.status == "pending"
+    ]
+    counts: dict[str, list] = {}
+    for item in risk_items:
+        account = _extract_account(item.job)
+        if account:
+            counts.setdefault(account, []).append(item)
+    if not counts and not renewal_items:
+        return {
+            "kind": "answer",
+            "answer": (
+                "No accounts are flagged at-risk in the queue right "
+                "now: there are no risk-watcher drafts on file."
+            ),
+            "accounts": [],
+            "item_ids": [],
+        }
+    ranked = sorted(
+        counts.items(), key=lambda kv: (-len(kv[1]), kv[0])
+    )
+    accounts = [account for account, _items in ranked]
+    lines = []
+    for account, account_items in ranked:
+        lines.append(
+            "%s: %d risk signal(s), latest draft %s"
+            % (account, len(account_items), account_items[-1].id)
+        )
+    if renewal_items:
+        renewal_accounts = sorted(
+            {
+                _extract_account(item.job)
+                for item in renewal_items
+                if _extract_account(item.job)
+            }
+        )
+        for account in renewal_accounts:
+            if account not in accounts:
+                accounts.append(account)
+        lines.append(
+            "%d renewal draft(s) pending for: %s"
+            % (len(renewal_items), ", ".join(renewal_accounts))
+        )
+    answer = "Accounts flagged at-risk (%d): %s" % (
+        len(accounts),
+        "; ".join(lines),
+    )
+    if ranked:
+        answer = "Most risk: %s. %s" % (ranked[0][0], answer)
+    return {
+        "kind": "answer",
+        "answer": answer,
+        "accounts": accounts,
+        "item_ids": [item.id for item in risk_items + renewal_items],
+    }
+
+
+def _accounts_answer(text: str, known: set[str]) -> dict | None:
+    """Answer a "which accounts" question from the accounts Belay
+    knows. Returns None when the text is not an account-list
+    question."""
+    lowered = text.lower()
+    if not any(word in lowered for word in _ACCOUNT_LIST_WORDS):
+        return None
+    if not known:
+        return {
+            "kind": "answer",
+            "answer": "Belay doesn't know any accounts yet.",
+            "accounts": [],
+            "item_ids": [],
+        }
+    return {
+        "kind": "answer",
+        "answer": "Accounts Belay knows: %s." % ", ".join(sorted(known)),
+        "accounts": sorted(known),
+        "item_ids": [],
+    }
+
+
+def answer_cross_account(
+    text: str,
+    queue: ApprovalQueue,
+    memory: AccountMemory | None = None,
+) -> dict | None:
+    """Answer a question that spans accounts from the queue and
+    memory data, with no agent run and no new draft. Risk questions
+    are answered from the risk-watcher drafts; account-list
+    questions from the known accounts. Anything else is None: the
+    caller asks which account instead."""
+    risk = _risk_answer(text, queue)
+    if risk is not None:
+        return risk
+    known = known_accounts(queue, memory, None)
+    return _accounts_answer(text, known)

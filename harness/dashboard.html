@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Belay dashboard</title>
+<link rel="icon" href="/belay-icon.png" type="image/png">
 <style>
   :root {
     --bg: #0b0c0e;
@@ -189,7 +190,7 @@
 </head>
 <body>
 <header>
-  <h1>Belay <span>dashboard</span></h1>
+  <h1><img src="/belay-icon.png" alt="" style="height: 26px; width: 26px; vertical-align: -5px; margin-right: 6px;">Belay <span>dashboard</span></h1>
   <div class="tagline">Everything is a draft until I say send.</div>
   <div class="version" id="version"></div>
 </header>
@@ -701,16 +702,50 @@ document.getElementById("prompt-form").addEventListener("submit", async function
   var text = input.value.trim();
   if (!text) { errEl.textContent = "Type a prompt first."; return; }
   btn.disabled = true;
+  resEl.textContent = "Working…";
+  var res;
   try {
-    var res = await api("/api/prompt",
+    res = await api("/api/prompt",
       { method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text: text }) });
-    resEl.textContent = "Routed to " + res.agent + " for " + res.account +
-      " — draft queued (" + res.item.id + ").";
-    input.value = "";
-    document.querySelector('#nav button[data-view="queue"]').click();
-  } catch (e) { errEl.textContent = e.message; btn.disabled = false; return; }
+  } catch (e) { errEl.textContent = e.message; btn.disabled = false; resEl.textContent = ""; return; }
   btn.disabled = false;
+  if (res.kind === "draft") {
+    // The result stays in this card: a summary plus a link to the
+    // Queue item. The page never jumps tabs on its own; the user
+    // follows the link.
+    var draft = res.item.draft || "";
+    var summary = draft.length > 400 ? draft.slice(0, 400) + "…" : draft;
+    resEl.innerHTML = "Routed to " + esc(res.display_name) + " for " +
+      esc(res.account) + " — draft queued." +
+      '<div class="draft">' + esc(summary) + '</div>' +
+      '<div class="actions"><button class="small" id="prompt-view-queue">View in Queue</button></div>';
+    document.getElementById("prompt-view-queue").addEventListener("click", function () {
+      document.querySelector('#nav button[data-view="queue"]').click();
+    });
+    input.value = "";
+  } else if (res.kind === "answer") {
+    // A cross-account question, answered from the queue and memory
+    // data, with no new draft. The links go to the drafts the
+    // answer cites.
+    var links = (res.item_ids || []).map(function (id) {
+      return '<button class="small" data-view-draft>View draft ' + esc(id) + '</button>';
+    }).join(" ");
+    resEl.innerHTML = esc(res.answer) +
+      (links ? '<div class="actions">' + links + '</div>' : "");
+    resEl.querySelectorAll("[data-view-draft]").forEach(function (b) {
+      b.addEventListener("click", function () {
+        document.querySelector('#nav button[data-view="queue"]').click();
+      });
+    });
+  } else {
+    // No account could be resolved and the question needs one:
+    // ask, with a working example, in place.
+    errEl.textContent = res.message + " Try: " + res.example;
+    if (res.known_accounts && res.known_accounts.length) {
+      resEl.textContent = "Accounts Belay knows: " + res.known_accounts.join(", ");
+    }
+  }
   loadState();
 });
 document.getElementById("schedule-form").addEventListener("submit", async function (ev) {

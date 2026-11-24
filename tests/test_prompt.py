@@ -198,29 +198,49 @@ class TestPromptEndpoint(unittest.TestCase):
         self.assertEqual(res.json()["agent"], "briefer")
         self.assertEqual(res.json()["route"]["confidence"], "low")
 
-    def test_unknown_account_is_400_not_a_wrong_draft(self):
+    def test_unknown_account_asks_which_account_not_a_wrong_draft(self):
+        # v1.16.0: a prompt with no resolvable account is asked, not
+        # refused: a 200 needs-account reply with a working example,
+        # and no draft queued.
         before = len(self._queue().list_pending())
         res = self.client.post(
             "/api/prompt", json={"text": "draft a renewal plan"}
         )
-        self.assertEqual(res.status_code, 400)
-        self.assertIn("account", res.json()["detail"].lower())
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["kind"], "needs_account")
+        self.assertIn("account", body["message"].lower())
+        self.assertIn("draft a renewal brief for", body["example"])
         self.assertEqual(len(self._queue().list_pending()), before)
 
-    def test_ambiguous_account_is_400_with_candidates(self):
+    def test_ambiguous_account_asks_for_one_with_candidates(self):
         _seed_queue(self.config.approvals_file, ["Acme", "Apex"])
         res = self.client.post(
             "/api/prompt",
             json={"text": "draft a renewal plan for Acme and Apex"},
         )
-        self.assertEqual(res.status_code, 400)
-        detail = res.json()["detail"]
-        self.assertIn("Acme", detail)
-        self.assertIn("Apex", detail)
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["kind"], "needs_account")
+        self.assertEqual(body["candidates"], ["Acme", "Apex"])
+        self.assertIn("Acme", body["message"])
 
     def test_empty_prompt_is_400(self):
         res = self.client.post("/api/prompt", json={"text": "   "})
         self.assertEqual(res.status_code, 400)
+
+    def test_prompt_result_kind_is_draft(self):
+        res = self.client.post(
+            "/api/prompt",
+            json={"text": "draft a renewal plan for Acme Corp"},
+        )
+        self.assertEqual(res.json()["kind"], "draft")
+
+    def test_icon_route_serves_the_app_icon(self):
+        res = self.client.get("/belay-icon.png")
+        self.assertEqual(res.status_code, 200)
+        self.assertTrue(res.headers["content-type"].startswith("image/png"))
+        self.assertEqual(res.content[:8], b"\x89PNG\r\n\x1a\n")
 
     def test_queued_prompt_draft_shows_in_state(self):
         self.client.post(
@@ -232,6 +252,87 @@ class TestPromptEndpoint(unittest.TestCase):
         agents = [i for i in state["queue"] if i["agent"] == "renewal-desk"]
         self.assertEqual(len(agents), 1)
         self.assertEqual(agents[0]["account"], "Acme Corp")
+
+
+class TestCrossAccountAnswers(unittest.TestCase):
+    """v1.16.0: cross-account questions are answered from the queue
+    and memory data, not refused for lacking an account name."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.config = Config(
+            approvals_file=os.path.join(self.tmp.name, "approvals.json"),
+            memory_file=os.path.join(self.tmp.name, "memory.json"),
+            schedules_file=os.path.join(self.tmp.name, "schedules.json"),
+            escalations_file=os.path.join(self.tmp.name, "escalations.json"),
+            mcp_servers_file=os.path.join(self.tmp.name, "mcp-servers.json"),
+            stub_mode=True,
+        )
+        self.queue = _seed_queue(self.config.approvals_file, ["Acme Corp"])
+        self.client = TestClient(create_app(self.config))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def _seed_risk(self, account, count=1):
+        for _ in range(count):
+            self.queue.submit(
+                agent="risk-watcher",
+                job={"account": account},
+                draft="Risk signals for %s: champion departure." % account,
+                sources=["salesforce_list_cases"],
+                proof=[],
+            )
+
+    def test_most_risk_answered_from_risk_watcher_drafts(self):
+        self._seed_risk("Acme Corp", count=2)
+        self._seed_risk("Globex Inc", count=1)
+        before = len(self.queue.list_pending())
+        res = self.client.post(
+            "/api/prompt", json={"text": "What account has most risk"}
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["kind"], "answer")
+        self.assertIn("Acme Corp", body["answer"])
+        self.assertEqual(body["accounts"][0], "Acme Corp")
+        self.assertIn("Globex Inc", body["accounts"])
+        self.assertEqual(len(body["item_ids"]), 3)
+        # No new draft was queued for the answer.
+        self.assertEqual(len(self.queue.list_pending()), before)
+
+    def test_risk_question_with_no_risk_data_says_so(self):
+        res = self.client.post(
+            "/api/prompt", json={"text": "Which account is most at risk?"}
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["kind"], "answer")
+        self.assertIn("No accounts are flagged at-risk", body["answer"])
+        self.assertEqual(body["accounts"], [])
+
+    def test_plain_question_about_unknown_account_asks(self):
+        # "What does Initech LLC do?" names no known account: ask
+        # which account, with an example, instead of refusing.
+        before = len(self.queue.list_pending())
+        res = self.client.post(
+            "/api/prompt", json={"text": "What does Initech LLC do?"}
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["kind"], "needs_account")
+        self.assertIn("Acme Corp", body["known_accounts"])
+        self.assertIn("draft a renewal brief for", body["example"])
+        self.assertEqual(len(self.queue.list_pending()), before)
+
+    def test_which_accounts_lists_known_accounts(self):
+        res = self.client.post(
+            "/api/prompt", json={"text": "Which accounts do you know?"}
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertEqual(body["kind"], "answer")
+        self.assertIn("Acme Corp", body["accounts"])
 
 
 if __name__ == "__main__":

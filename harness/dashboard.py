@@ -33,20 +33,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from . import AGENTS, __version__
 from .agents import _extract_account
 from .approvals import ApprovalQueue
 from .config import Config
 from .escalations import EscalationStore
+from .launcher import bundled_icon_path
 from .mcp_client import MCPClient, MCPServerStore
 from .memory import AccountMemory
-from .prompt import (
-    AmbiguousAccountError,
-    UnknownAccountError,
-    run_prompt,
-)
+from .prompt import run_prompt
 from .scheduler import (
     ScheduleStore,
     _parse_iso,
@@ -542,6 +539,16 @@ def create_app(
     def index() -> str:
         return _load_template()
 
+    @app.get("/belay-icon.png")
+    def icon() -> FileResponse:
+        # The app icon: favicon and header image. Served from the
+        # bundled asset, so it works from source and from the
+        # packaged app.
+        path = bundled_icon_path()
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="Icon not found")
+        return FileResponse(path, media_type="image/png")
+
     @app.get("/api/state")
     def state() -> JSONResponse:
         return JSONResponse(
@@ -557,11 +564,17 @@ def create_app(
 
     @app.post("/api/prompt")
     def run_prompt_endpoint(body: dict) -> JSONResponse:
-        # Prompt window (v1.15.0): free text in, queued draft out. The
-        # run goes through the same execution path as a CLI run, so the
+        # Prompt window (v1.15.0, result in place since v1.16.0):
+        # free text in, and the result back in the same card. A draft
+        # runs through the same execution path as a CLI run, so the
         # draft carries its proof checklist and the approval gate is
-        # unchanged. An unresolvable or ambiguous account is a 400
-        # with a plain message, never a draft for the wrong account.
+        # unchanged. A cross-account question is answered from the
+        # queue and memory data, with no new draft. A prompt that
+        # names no account comes back as a needs-account reply that
+        # asks which account, with a working example: asking is not
+        # refusing, and no draft is ever queued for the wrong account.
+        # The page never jumps tabs on its own: the result carries a
+        # link to the Queue item, and the user follows it.
         text = str(body.get("text", "") or "").strip()
         if not text:
             raise HTTPException(status_code=400, detail="Prompt needs some text")
@@ -573,25 +586,37 @@ def create_app(
                 memory=get_memory(),
                 schedules=get_schedules(),
             )
-        except AmbiguousAccountError as exc:
-            raise HTTPException(
-                status_code=400,
-                detail="Ambiguous account: %s. Name one account."
-                % ", ".join(exc.candidates),
-            )
-        except UnknownAccountError as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except NotImplementedError as exc:
             raise HTTPException(status_code=500, detail=str(exc))
+        if result["kind"] == "draft":
+            return JSONResponse(
+                {
+                    "kind": "draft",
+                    "item": _queue_item_dict(result["item"]),
+                    "agent": result["agent"],
+                    "display_name": result["display_name"],
+                    "route": result["route"],
+                    "account": result["account"],
+                }
+            )
+        if result["kind"] == "answer":
+            return JSONResponse(
+                {
+                    "kind": "answer",
+                    "answer": result["answer"],
+                    "accounts": result["accounts"],
+                    "item_ids": result["item_ids"],
+                }
+            )
         return JSONResponse(
             {
-                "item": _queue_item_dict(result["item"]),
-                "agent": result["agent"],
-                "display_name": result["display_name"],
-                "route": result["route"],
-                "account": result["account"],
+                "kind": "needs_account",
+                "message": result["message"],
+                "known_accounts": result.get("known_accounts", []),
+                "candidates": result.get("candidates", []),
+                "example": result["example"],
             }
         )
 
