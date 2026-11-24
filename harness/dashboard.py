@@ -562,6 +562,52 @@ def create_app(
             )
         )
 
+    @app.get("/api/setup")
+    def get_setup() -> JSONResponse:
+        # Settings view (v1.16.0): the LLM choice and connector
+        # credentials, with secrets masked. The config is re-read
+        # from .env on every call, so a save shows up immediately.
+        from harness.setup import _reload_config, setup_state
+
+        return JSONResponse(setup_state(_reload_config(cfg)))
+
+    @app.post("/api/setup/llm")
+    def set_setup_llm(body: dict) -> JSONResponse:
+        # Apply an LLM choice from Settings: validate, write .env,
+        # verify where a check exists. A bad provider or a missing
+        # key is a 400, never a silent no-op.
+        from harness.setup import _reload_config, apply_llm_choice
+
+        try:
+            result = apply_llm_choice(
+                _reload_config(cfg),
+                str(body.get("provider", "") or ""),
+                api_key=body.get("api_key"),
+                base_url=body.get("base_url"),
+                model=body.get("model"),
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(result)
+
+    @app.post("/api/setup/connectors")
+    def set_setup_connectors(body: dict) -> JSONResponse:
+        # Apply connector credentials from Settings: only known
+        # fields are accepted, blanks leave keys unchanged, and
+        # secrets go to .env, never back in the response.
+        from harness.setup import _reload_config, apply_connector_values
+
+        values = body.get("values") or {}
+        if not isinstance(values, dict):
+            raise HTTPException(
+                status_code=400, detail="values must be an object"
+            )
+        try:
+            result = apply_connector_values(_reload_config(cfg), values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(result)
+
     @app.post("/api/prompt")
     def run_prompt_endpoint(body: dict) -> JSONResponse:
         # Prompt window (v1.15.0, result in place since v1.16.0):

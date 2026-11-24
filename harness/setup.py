@@ -969,6 +969,200 @@ def _demo_config(config: Config) -> Config:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard setup (v1.16.0): the same wizard, as a web flow.
+#
+# The dashboard Settings view is the default first-run path: LLM
+# choice and connector setup without a terminal. These helpers are
+# the shared core the dashboard endpoints and the CLI wizard both
+# use: state (with secrets masked, never in full), and apply
+# (validated, written to .env, verified where a check exists).
+# Secrets are never printed and never returned in full.
+# ---------------------------------------------------------------------------
+
+# Env key -> Config attribute, for reading a field's current value.
+_ENV_TO_ATTR = {
+    "SALESFORCE_INSTANCE_URL": "salesforce_instance_url",
+    "SALESFORCE_ACCESS_TOKEN": "salesforce_access_token",
+    "SLACK_BOT_TOKEN": "slack_bot_token",
+    "GONG_ACCESS_TOKEN": "gong_access_token",
+    "GONG_API_BASE_URL": "gong_api_base_url",
+    "HUBSPOT_ACCESS_TOKEN": "hubspot_access_token",
+    "HUBSPOT_PORTAL_ID": "hubspot_portal_id",
+    "GMAIL_CLIENT_ID": "gmail_client_id",
+    "GMAIL_CLIENT_SECRET": "gmail_client_secret",
+    "GMAIL_REFRESH_TOKEN": "gmail_refresh_token",
+    "ZOOM_ACCOUNT_ID": "zoom_account_id",
+    "ZOOM_CLIENT_ID": "zoom_client_id",
+    "ZOOM_CLIENT_SECRET": "zoom_client_secret",
+    "ZENDESK_SUBDOMAIN": "zendesk_subdomain",
+    "ZENDESK_EMAIL": "zendesk_email",
+    "ZENDESK_API_TOKEN": "zendesk_api_token",
+    "LINEAR_API_KEY": "linear_api_key",
+    "CHAMPIFY_API_KEY": "champify_api_key",
+    "CHAMPIFY_API_BASE_URL": "champify_api_base_url",
+    "GCAL_CLIENT_ID": "gcal_client_id",
+    "GCAL_CLIENT_SECRET": "gcal_client_secret",
+    "GCAL_REFRESH_TOKEN": "gcal_refresh_token",
+}
+
+
+def mask_secret(value: str) -> str:
+    """Mask a secret for display: eight stars plus the last four
+    characters, so the user can tell which key it is without ever
+    seeing the full value. An empty value stays empty (not set)."""
+    if not value:
+        return ""
+    if len(value) <= 4:
+        return "*" * len(value)
+    return "*" * 8 + value[-4:]
+
+
+def setup_state(config: Config) -> dict:
+    """What the dashboard Settings view renders: the LLM provider,
+    model, and whether a key is set (masked), and per connector the
+    fields with masked secret values and the configured state. No
+    secret is ever returned in full."""
+    connectors = []
+    for section in dict.fromkeys(spec[0] for spec in FIELD_SPECS):
+        method = SECTION_CONFIGURED[section]
+        fields = []
+        for _sec, key, label, secret, _default in FIELD_SPECS:
+            if _sec != section:
+                continue
+            raw = str(getattr(config, _ENV_TO_ATTR[key], None) or "")
+            fields.append(
+                {
+                    "key": key,
+                    "label": label,
+                    "secret": secret,
+                    "set": bool(raw),
+                    "value": mask_secret(raw) if secret else raw,
+                }
+            )
+        connectors.append(
+            {
+                "name": section,
+                "configured": bool(getattr(config, method)()),
+                "fields": fields,
+            }
+        )
+    return {
+        "llm": {
+            "provider": detect_provider(config),
+            "base_url": config.llm_base_url,
+            "model": config.llm_model,
+            "api_key_set": bool(config.llm_api_key),
+            "api_key_masked": mask_secret(config.llm_api_key or ""),
+        },
+        "providers": [
+            {
+                "key": key,
+                "label": str(PROVIDERS[key]["label"]),
+                "needs_key": bool(PROVIDERS[key]["needs_key"]),
+            }
+            for key in PROVIDER_ORDER
+        ],
+        "connectors": connectors,
+    }
+
+
+def _reload_config(config: Config) -> Config:
+    """Reload the config from .env after a write, keeping the
+    caller's store paths: .env never carries store paths, so the
+    reloaded config would otherwise lose a temp dir's paths."""
+    from dotenv import load_dotenv
+
+    load_dotenv(config.env_path)
+    reloaded = Config.from_env()
+    return replace(
+        reloaded,
+        approvals_file=config.approvals_file,
+        memory_file=config.memory_file,
+        schedules_file=config.schedules_file,
+        escalations_file=config.escalations_file,
+        mcp_servers_file=config.mcp_servers_file,
+        env_path=config.env_path,
+    )
+
+
+def apply_llm_choice(
+    config: Config,
+    provider: str,
+    api_key: str | None = None,
+    base_url: str | None = None,
+    model: str | None = None,
+) -> dict:
+    """Apply an LLM choice from the dashboard: validate the provider,
+    write the base URL, model, and key to .env, reload, and verify
+    where a check exists. Returns {"provider", "base_url", "model",
+    "verified"}. Raises ValueError on an unknown provider or a
+    missing value the provider needs."""
+    provider = (provider or "").strip()
+    if provider not in PROVIDERS:
+        raise ValueError("Unknown LLM provider: %r." % provider)
+    if provider == "ollama":
+        updates = {
+            "HARNESS_LLM_BASE_URL": OLLAMA_BASE_URL,
+            "HARNESS_LLM_MODEL": (model or "").strip() or OLLAMA_DEFAULT_MODEL,
+        }
+    elif provider == "custom":
+        base = (base_url or "").strip()
+        if not base:
+            raise ValueError("A custom endpoint needs a base URL.")
+        updates = {
+            "HARNESS_LLM_BASE_URL": base,
+            "HARNESS_LLM_MODEL": (model or "").strip() or config.llm_model,
+        }
+        if (api_key or "").strip():
+            updates["HARNESS_LLM_API_KEY"] = api_key.strip()
+    else:
+        key = (api_key or "").strip()
+        if not key:
+            raise ValueError(
+                "%s needs an API key." % PROVIDERS[provider]["label"]
+            )
+        updates = {
+            "HARNESS_LLM_BASE_URL": str(PROVIDERS[provider]["base_url"]),
+            "HARNESS_LLM_API_KEY": key,
+            "HARNESS_LLM_MODEL": (model or "").strip()
+            or str(PROVIDERS[provider]["model"]),
+        }
+    write_env_values(config.env_path, updates)
+    new_config = _reload_config(config)
+    return {
+        "provider": provider,
+        "base_url": new_config.llm_base_url,
+        "model": new_config.llm_model,
+        "verified": verify_llm(new_config),
+    }
+
+
+def apply_connector_values(config: Config, values: dict) -> dict:
+    """Write connector fields from the dashboard. Only FIELD_SPECS
+    keys are accepted: an unknown key raises ValueError. A blank
+    value leaves the key unchanged (a secret is never cleared by
+    submitting an empty field). Returns {"written": [...],
+    "connectors": [configured section names]}. Secrets are written
+    to .env only, never returned."""
+    allowed = {key for _sec, key, _label, _secret, _d in FIELD_SPECS}
+    updates = {}
+    for key, value in (values or {}).items():
+        if key not in allowed:
+            raise ValueError("Unknown connector field: %r." % key)
+        text = str(value or "").strip()
+        if text:
+            updates[key] = text
+    written = write_env_values(config.env_path, updates) if updates else []
+    new_config = _reload_config(config)
+    configured = [
+        section
+        for section, method in SECTION_CONFIGURED.items()
+        if getattr(new_config, method)()
+    ]
+    return {"written": written, "connectors": configured}
+
+
+# ---------------------------------------------------------------------------
 # The two choices.
 # ---------------------------------------------------------------------------
 

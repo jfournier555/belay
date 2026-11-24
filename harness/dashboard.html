@@ -203,6 +203,7 @@
   <button data-view="writeback">Write-back</button>
   <button data-view="mcp">MCP servers</button>
   <button data-view="agents">Agents</button>
+  <button data-view="settings">Settings</button>
 </nav>
 <main>
   <div class="card" id="prompt-card">
@@ -313,6 +314,31 @@
       <div id="agents"></div>
     </div>
   </section>
+
+  <section class="view" id="view-settings">
+    <div class="card">
+      <h2>Setup: language model</h2>
+      <div class="note">Pick the model Belay drafts with. Ollama runs on this machine, no key. A hosted provider needs its API key. Keys go to .env and are never shown in full.</div>
+      <form class="inline" id="llm-form">
+        <label>Provider
+          <select name="provider" id="llm-provider"></select>
+        </label>
+        <label id="llm-key-label">API key <input name="api_key" id="llm-key" type="password" placeholder="not set" autocomplete="off"></label>
+        <label id="llm-base-label" style="display: none;">Base URL <input name="base_url" id="llm-base" placeholder="https://…" size="28" autocomplete="off"></label>
+        <label>Model <input name="model" id="llm-model" size="28" autocomplete="off"></label>
+        <button type="submit" class="approve">Save model</button>
+      </form>
+      <div class="form-error" id="llm-error"></div>
+      <div class="note" id="llm-status"></div>
+    </div>
+    <div class="card">
+      <h2>Connectors</h2>
+      <div class="note">Add or change a connector's credentials. Secrets are stored to .env and shown masked, never in full. Leave a field blank to keep its current value.</div>
+      <div id="connectors"></div>
+      <div class="form-error" id="connectors-error"></div>
+      <div class="note" id="connectors-status"></div>
+    </div>
+  </section>
 </main>
 <script>
 function esc(s) {
@@ -356,9 +382,9 @@ function render(state) {
   var fr = document.getElementById("first-run");
   if (state.first_run) {
     fr.innerHTML = '<div class="first-run"><h2>First run: nothing is set up yet</h2>' +
-      '<p>The stores are empty and no credentials are configured. Fill them with demo data to see a lived-in harness, or run the setup wizard from the CLI to pick an LLM (Ollama is the default, no key) and connect your sources.</p>' +
+      '<p>The stores are empty and no credentials are configured. Fill them with demo data to see a lived-in harness, or open Settings above to pick an LLM (Ollama is the default, no key) and connect your sources. The CLI wizard still works too: <code>python -m harness.run setup</code>.</p>' +
       '<div class="actions"><button class="approve" id="demo-seed-btn">Fill with demo data</button>' +
-      '<span class="note">or run: <code>python -m harness.run setup</code></span></div>' +
+      '<span class="note">or open Settings above</span></div>' +
       '<div class="form-error" id="first-run-error"></div></div>';
     document.getElementById("demo-seed-btn").addEventListener("click", async function () {
       var btn = this; btn.disabled = true;
@@ -791,6 +817,109 @@ document.getElementById("mcp-form").addEventListener("submit", async function (e
     form.reset();
   } catch (e) { errEl.textContent = e.message; return; }
   loadState();
+});
+var setupLoaded = false;
+async function loadSettings() {
+  var state;
+  try {
+    state = await api("/api/setup");
+  } catch (e) {
+    document.getElementById("connectors-error").textContent = e.message;
+    return;
+  }
+  setupLoaded = true;
+  var providerSelect = document.getElementById("llm-provider");
+  if (!providerSelect.options.length) {
+    state.providers.forEach(function (p) {
+      var opt = document.createElement("option");
+      opt.value = p.key; opt.textContent = p.label;
+      providerSelect.appendChild(opt);
+    });
+  }
+  providerSelect.value = state.llm.provider;
+  document.getElementById("llm-model").value = state.llm.model || "";
+  document.getElementById("llm-key").placeholder =
+    state.llm.api_key_set ? state.llm.api_key_masked : "not set";
+  document.getElementById("llm-base").value = state.llm.base_url || "";
+  syncLlmForm();
+  renderConnectors(state);
+}
+function syncLlmForm() {
+  var provider = document.getElementById("llm-provider").value;
+  document.getElementById("llm-key-label").style.display =
+    provider === "ollama" ? "none" : "";
+  document.getElementById("llm-base-label").style.display =
+    provider === "custom" ? "" : "none";
+}
+function renderConnectors(state) {
+  var el = document.getElementById("connectors");
+  el.innerHTML = state.connectors.map(function (conn) {
+    var fields = conn.fields.map(function (f) {
+      return '<label>' + esc(f.label) +
+        '<input name="' + esc(f.key) + '" type="' + (f.secret ? "password" : "text") + '"' +
+        ' placeholder="' + esc(f.set ? f.value : "not set") + '" autocomplete="off"></label>';
+    }).join("");
+    return '<div class="card"><h2>' + esc(conn.name) +
+      '<span class="pill ' + (conn.configured ? "live" : "stub") + '">' +
+      (conn.configured ? "live" : "stub") + '</span></h2>' +
+      '<form class="inline" data-connector-form>' + fields +
+      '<button type="submit" class="approve">Save ' + esc(conn.name) + '</button>' +
+      '</form></div>';
+  }).join("");
+  el.querySelectorAll("[data-connector-form]").forEach(function (form) {
+    form.addEventListener("submit", async function (ev) {
+      ev.preventDefault();
+      var errEl = document.getElementById("connectors-error");
+      var statusEl = document.getElementById("connectors-status");
+      errEl.textContent = "";
+      statusEl.textContent = "";
+      var values = {};
+      form.querySelectorAll("input").forEach(function (input) {
+        if (input.value.trim()) values[input.name] = input.value.trim();
+      });
+      if (!Object.keys(values).length) {
+        errEl.textContent = "Nothing to save: fill in a field first.";
+        return;
+      }
+      try {
+        var res = await api("/api/setup/connectors",
+          { method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ values: values }) });
+      } catch (e) { errEl.textContent = e.message; return; }
+      statusEl.textContent = "Saved " + res.written.length + " key(s) to .env.";
+      form.reset();
+      loadSettings();
+      loadState();
+    });
+  });
+}
+document.getElementById("llm-provider").addEventListener("change", syncLlmForm);
+document.getElementById("llm-form").addEventListener("submit", async function (ev) {
+  ev.preventDefault();
+  var form = ev.target;
+  var errEl = document.getElementById("llm-error");
+  var statusEl = document.getElementById("llm-status");
+  errEl.textContent = "";
+  statusEl.textContent = "";
+  var body = {
+    provider: form.provider.value,
+    api_key: form.api_key.value.trim() || null,
+    base_url: form.base_url.value.trim() || null,
+    model: form.model.value.trim() || null,
+  };
+  try {
+    var res = await api("/api/setup/llm",
+      { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body) });
+  } catch (e) { errEl.textContent = e.message; return; }
+  statusEl.textContent = "Saved: " + res.provider + " (" + res.model + "). " +
+    (res.verified ? "Verified live." : "Could not verify; drafts will be stub-labeled until it works.");
+  form.api_key.value = "";
+  loadSettings();
+  loadState();
+});
+document.querySelector('#nav button[data-view="settings"]').addEventListener("click", function () {
+  if (!setupLoaded) loadSettings();
 });
 loadState();
 setInterval(loadState, 30000);
