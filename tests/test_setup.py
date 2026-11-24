@@ -10,6 +10,7 @@ commands: no real install ever runs in tests.
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -90,10 +91,12 @@ class _FakeRun:
 
     def __init__(self, returncode=0):
         self.commands: list = []
+        self.kwargs: list = []
         self.returncode = returncode
 
     def __call__(self, cmd, **kwargs):
         self.commands.append(cmd)
+        self.kwargs.append(kwargs)
         return _FakeResult(self.returncode)
 
 
@@ -431,6 +434,29 @@ class TestWizardLlm(unittest.TestCase):
             },
         )
         self.assertIn("llama3.1:8b is pulled", io.text())
+
+    def test_model_pull_does_not_consume_wizard_input(self):
+        # The v1.15.0 first-run bug: after the Ollama pull finished,
+        # the wizard looked hung, with typed input echoing raw. The
+        # pull subprocess inherited the wizard's stdin and ate
+        # keystrokes typed during the pull. It runs with stdin
+        # DEVNULL now, so the next prompt reads the wizard's input.
+        with mock.patch(
+            "harness.setup.ollama_models",
+            side_effect=[[], ["llama3.1:8b"]],
+        ), mock.patch(
+            "harness.setup.ollama_cli_present", return_value=True
+        ):
+            run_fn = _FakeRun()
+            updates, io = self._step(["1", "y"], run_fn=run_fn)
+        self.assertEqual(
+            run_fn.commands, [["ollama", "pull", "llama3.1:8b"]]
+        )
+        self.assertEqual(run_fn.kwargs[0].get("stdin"), subprocess.DEVNULL)
+        self.assertIn("llama3.1:8b pulled.", io.text())
+        self.assertEqual(
+            updates["HARNESS_LLM_BASE_URL"], OLLAMA_BASE_URL
+        )
 
     def test_pick_hosted_provider_stores_key_and_model(self):
         updates, io = self._step(["2", "sk-test-key-123", ""])

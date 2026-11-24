@@ -30,6 +30,11 @@ Usage:
     python -m harness.run escalations resolve <id> [--note "..."]
     python -m harness.run setup [--demo | --wizard | --clear-demo]
     python -m harness.run dashboard [--port 8000]
+    python -m harness.run launch [--port 8000]
+    python -m harness.run
+
+A bare run with no subcommand launches the dashboard (v1.16.0):
+the GUI is the default first run, the CLI is the power-user path.
 
 The `run` command routes the job, runs the agent, and submits the draft to
 the approval queue. Nothing is sent anywhere. A human approves it with
@@ -199,6 +204,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return 1
     if args.wizard:
         run_setup_wizard(config, env_path=config.env_path)
+        _create_launcher_after_wizard()
         return 0
     if not sys.stdin.isatty():
         print("First run. Two ways in:")
@@ -219,6 +225,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
             return 0
         return 1
     run_setup_wizard(config, env_path=config.env_path)
+    _create_launcher_after_wizard()
     return 0
 
 
@@ -227,6 +234,49 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     from harness.dashboard import main as dashboard_main
 
     return dashboard_main(["--port", str(args.port)])
+
+
+def cmd_launch(args: argparse.Namespace) -> int:
+    """Double-click launch (v1.16.0): start the dashboard server and
+    open it in the browser, with no terminal interaction needed.
+    Blocks until the server stops (Ctrl-C). A bare `belay` with no
+    subcommand runs this too: the GUI is the default, the CLI is the
+    power-user path."""
+    from harness.launcher import launch_dashboard
+
+    print(
+        "Belay dashboard v%s on http://127.0.0.1:%d"
+        % (__version__, args.port)
+    )
+    print("Close this window to stop Belay, or press Ctrl-C.")
+    result = launch_dashboard(port=args.port, open_browser=True)
+    if not result["up"]:
+        print(
+            "The dashboard did not start on port %d." % args.port,
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        result["thread"].join()
+    except KeyboardInterrupt:
+        print("\nBelay stopped.")
+    return 0
+
+
+def _create_launcher_after_wizard() -> None:
+    """At the end of the CLI wizard, create the desktop launcher
+    automatically, so the user never hand-writes one. Best effort:
+    a failure is reported, never fatal."""
+    from harness.launcher import create_launcher
+
+    report = create_launcher()
+    if report["created"]:
+        print("Desktop launcher created: %s" % report["path"])
+    else:
+        print(
+            "Desktop launcher not created: %s"
+            % (report["error"] or "unknown reason")
+        )
 
 
 def execute_job(config: Config, job: dict):
@@ -903,6 +953,13 @@ def build_parser() -> argparse.ArgumentParser:
     dash_p.add_argument("--port", type=int, default=8000)
     dash_p.set_defaults(func=cmd_dashboard)
 
+    launch_p = sub.add_parser(
+        "launch",
+        help="Start the dashboard and open it in the browser (double-click launch).",
+    )
+    launch_p.add_argument("--port", type=int, default=8000)
+    launch_p.set_defaults(func=cmd_launch)
+
     setup_p = sub.add_parser("setup", help="First run: demo data or the setup wizard.")
     setup_p.add_argument("--demo", action="store_true", help="Fill the stores with demo data.")
     setup_p.add_argument("--wizard", action="store_true", help="Walk the LLM provider choice and connectors, writing .env.")
@@ -932,6 +989,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        # Bare `belay` with no subcommand (v1.16.0, decided): launch
+        # the dashboard. The GUI is the default first run; the CLI
+        # stays as the power-user path. A usage error here would send
+        # a non-technical user back to the terminal for help, which
+        # is the exact step the double-click launch removes.
+        return cmd_launch(argparse.Namespace(port=8000))
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.command == "approvals" and args.action in ("show", "approve", "reject", "edit") and not args.item_id:

@@ -31,8 +31,39 @@ class TestCli(unittest.TestCase):
             with self.assertRaises(SystemExit) as caught:
                 main(["--help"])
         self.assertEqual(caught.exception.code, 0)
-        for command in ("run", "agents", "tools", "approvals", "dashboard", "memory"):
+        for command in ("run", "agents", "tools", "approvals", "dashboard", "memory", "launch"):
             self.assertIn(command, buf.getvalue())
+
+    def test_bare_run_launches_the_dashboard(self):
+        # v1.16.0, decided: a bare `belay` with no subcommand launches
+        # the dashboard instead of printing a usage error. The GUI is
+        # the default; the CLI is the power-user path.
+        from unittest import mock
+
+        with mock.patch("harness.run.cmd_launch", return_value=0) as launch:
+            code = main([])
+        self.assertEqual(code, 0)
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args[0][0].port, 8000)
+
+    def test_launch_starts_server_and_blocks_on_it(self):
+        from unittest import mock
+
+        thread = mock.Mock()
+        with mock.patch(
+            "harness.launcher.launch_dashboard",
+            return_value={
+                "url": "http://127.0.0.1:8000",
+                "up": True,
+                "thread": thread,
+            },
+        ) as launch:
+            code, out = self._run(["launch"])
+        self.assertEqual(code, 0)
+        launch.assert_called_once()
+        self.assertEqual(launch.call_args.kwargs["port"], 8000)
+        thread.join.assert_called_once()
+        self.assertIn("Belay dashboard", out)
 
     def test_agents_lists_fifteen_implemented(self):
         code, out = self._run(["agents"])

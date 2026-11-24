@@ -42,6 +42,16 @@ import shutil
 import subprocess
 import tempfile
 import time
+
+try:
+    # Arrow-key editing in input(): without readline, the packaged
+    # binary echoes arrow keys raw (^[[A) instead of moving the
+    # cursor. Importing it here also makes the packager bundle it.
+    # Absent on Windows and in minimal builds: the wizard still
+    # works, keys are just typed, not edited.
+    import readline  # noqa: F401
+except ImportError:
+    pass
 from dataclasses import replace
 from datetime import datetime, timezone
 
@@ -637,7 +647,17 @@ def _ollama_readiness(
     out("Ollama is up, but %s is not pulled yet." % model)
     if ollama_cli_present() and interactive:
         if _ask_yes_no("Pull %s now?" % model, input_fn, default=True):
-            result = run_fn(["ollama", "pull", model])
+            # stdin is DEVNULL, not the wizard's terminal: a long
+            # pull (4.9 GB for the default model) must not consume
+            # keystrokes the user types while it runs, or the next
+            # prompt reads them as its answer and the wizard looks
+            # hung. The blank line after it redraws the prompt
+            # cleanly: the pull's progress output leaves the cursor
+            # mid-line.
+            result = run_fn(
+                ["ollama", "pull", model], stdin=subprocess.DEVNULL
+            )
+            out("")
             if result.returncode == 0:
                 models = ollama_models(api_base)
                 present = models is not None and any(
@@ -779,7 +799,9 @@ def _ollama_install_offer(
         )
         return False
     for cmd in commands:
-        result = run_fn(cmd, shell=True)
+        # Same stdin rule as the model pull: an install script must
+        # not eat the wizard's input while it runs.
+        result = run_fn(cmd, shell=True, stdin=subprocess.DEVNULL)
         if result.returncode != 0:
             out("The install failed at: %s" % cmd)
             out(
