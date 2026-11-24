@@ -15,9 +15,10 @@
 # - Windows: belay.exe (the bare executable)
 # - macOS:   Belay-macos.zip (contains Belay.app; a zip is how a .app
 #            bundle ships as a release asset). The .app is a thin
-#            launcher: the harness is interactive (the first-run
-#            wizard prompts), so double-clicking opens a Terminal and
-#            runs the binary inside it.
+#            launcher: double-clicking it runs `belay launch`, which
+#            starts the dashboard and opens it in the browser, with
+#            no terminal. First-run setup happens in the dashboard
+#            Settings view.
 # - Linux:   belay-linux (the bare executable, chmod +x)
 name: Release
 
@@ -67,13 +68,16 @@ jobs:
           cp dist/belay Belay.app/Contents/MacOS/belay
           cat > Belay.app/Contents/MacOS/Belay <<'EOF'
           #!/bin/sh
-          # Double-clicking Belay.app opens a Terminal and runs the
-          # harness: the first-run wizard is interactive, so it needs
-          # a terminal, not a bare .app with no console.
+          # Double-clicking Belay.app starts the dashboard and opens
+          # it in the browser, with no terminal: `belay launch`
+          # serves on localhost and opens the page. First-run setup
+          # happens in the dashboard Settings view, not in a terminal.
           DIR="$(cd "$(dirname "$0")" && pwd)"
-          open -a Terminal "$DIR/belay"
+          exec "$DIR/belay" launch
           EOF
           chmod +x Belay.app/Contents/MacOS/Belay Belay.app/Contents/MacOS/belay
+          mkdir -p Belay.app/Contents/Resources
+          cp harness/assets/belay-icon.png Belay.app/Contents/Resources/belay-icon.png
           cat > Belay.app/Contents/Info.plist <<EOF
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

@@ -312,7 +312,16 @@ class TestRunDue(_EnvCase):
     def _store_with(self, **overrides):
         # Written straight to the file (not via add): the test's fixed
         # "now" needs a chosen created_at, and add() stamps real now.
-        entry = self._entry("briefer", "Acme Corp", created_days_ago=2, **overrides)
+        # created_at is fixed to the test's "now" too: the entry
+        # helper stamps real now, which drifts past the fixed date
+        # and makes the job not-yet-due.
+        entry = self._entry(
+            "briefer",
+            "Acme Corp",
+            created_days_ago=2,
+            created_at="2026-11-19T08:00:00+00:00",
+            **overrides,
+        )
         self._write_schedules([entry])
         store = ScheduleStore(os.environ["HARNESS_SCHEDULES_FILE"])
         return store, store.get(entry["id"])
@@ -344,8 +353,18 @@ class TestRunDue(_EnvCase):
         self.assertIn("not yet due", results[0].reason)
 
     def test_failed_job_does_not_block_next(self):
-        first = self._entry("briefer", "Acme Corp", created_days_ago=2)
-        second = self._entry("briefer", "Globex Inc", created_days_ago=2)
+        first = self._entry(
+            "briefer",
+            "Acme Corp",
+            created_days_ago=2,
+            created_at="2026-11-19T08:00:00+00:00",
+        )
+        second = self._entry(
+            "briefer",
+            "Globex Inc",
+            created_days_ago=2,
+            created_at="2026-11-19T08:00:00+00:00",
+        )
         self._write_schedules([first, second])
         store = ScheduleStore(os.environ["HARNESS_SCHEDULES_FILE"])
         first_id = first["id"]
@@ -580,7 +599,7 @@ class TestSafetyAndCli(_EnvCase):
         self.assertIn("scheduler", out.getvalue())
 
     def test_version_still_1_9_0(self):
-        self.assertEqual(__version__, "1.15.0")
+        self.assertEqual(__version__, "1.16.0")
 
 
 if __name__ == "__main__":

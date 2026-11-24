@@ -25,6 +25,17 @@ class TestSpec(unittest.TestCase):
         self.assertIn("dashboard.html", source)
         self.assertIn('name="belay"', source)
 
+    def test_spec_bundles_the_app_icon(self):
+        spec_path = os.path.join(REPO, "belay.spec")
+        with open(spec_path, "r", encoding="utf-8") as f:
+            source = f.read()
+        self.assertIn("belay-icon.png", source)
+        self.assertTrue(
+            os.path.exists(
+                os.path.join(REPO, "harness", "assets", "belay-icon.png")
+            )
+        )
+
 
 @unittest.skipUnless(yaml is not None, "PyYAML not installed")
 class TestReleaseWorkflow(unittest.TestCase):
@@ -70,6 +81,17 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertIn("belay.exe", files)
         self.assertIn("Belay-macos.zip", files)
         self.assertIn("belay-linux", files)
+
+    def test_macos_app_launches_dashboard_without_terminal(self):
+        # v1.16.0: double-clicking Belay.app runs `belay launch`
+        # (dashboard in the browser, no terminal), not a Terminal
+        # window running the interactive wizard.
+        workflow = self._workflow()
+        steps = workflow["jobs"]["build"]["steps"]
+        runs = "\n".join(str(step.get("run", "")) for step in steps)
+        self.assertIn('exec "$DIR/belay" launch', runs)
+        self.assertNotIn("open -a Terminal", runs)
+        self.assertIn("belay-icon.png", runs)
 
 
 if __name__ == "__main__":

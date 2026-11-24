@@ -11,7 +11,7 @@ escalations) with stub content, so the dashboard shows a lived-in
 harness instead of empty views. The demo drafts use the default LLM
 chain: Ollama when it is reachable (real responses), the stub when
 it is not, labeled as stub in the output and in the drafts. Setup
-walks the LLM provider choice plus the nine connectors, writes them
+walks the LLM provider choice plus the ten connectors, writes them
 to .env, and verifies each one where a live check exists. When
 Ollama is missing, the wizard offers to install it (official
 distribution only), explicit yes, showing the exact command first.
@@ -1518,7 +1518,7 @@ def run_setup_wizard(
     env_path: str = ".env",
     run_demo: bool = True,
 ) -> dict:
-    """Walk the LLM provider choice plus the nine connectors, writing
+    """Walk the LLM provider choice plus the ten connectors, writing
     to .env.
 
     The LLM step first: a provider list with Ollama the default

@@ -181,7 +181,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     --demo fills the stores with demo data (refuses over real
     data unless --yes). --wizard walks the LLM provider choice and
-    the nine connectors, writing .env. --clear-demo removes only the seeded
+    the ten connectors, writing .env. --clear-demo removes only the seeded
     records. With no flag and an interactive terminal, it asks the
     one question with two answers; without a terminal it says so
     and exits 2."""

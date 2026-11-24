@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v1.15.0**, 15 agents, 9 connectors, 630 tests green.
+**A post sales AI harness.** Current version: **v1.16.0**, 15 agents, 10 connectors, 689 tests green.
 
 ![Belay: A post sales AI harness. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -12,11 +12,13 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 
 Download one file, no Python, no terminal:
 
-- **Windows:** `belay.exe` from the [latest release](https://github.com/jfournier555/belay/releases). Double-click it.
-- **macOS:** `Belay-macos.zip` from the [latest release](https://github.com/jfournier555/belay/releases). Unzip it, double-click `Belay.app`. It opens a Terminal and runs the harness there: the first-run wizard is interactive, so it needs a terminal.
-- **Linux:** `belay-linux` from the [latest release](https://github.com/jfournier555/belay/releases). `chmod +x belay-linux`, then `./belay-linux` (or double-click it in the file manager).
+- **Windows:** `belay.exe` from the [latest release](https://github.com/jfournier555/belay/releases). Double-click it: it starts the dashboard and opens it in your browser.
+- **macOS:** `Belay-macos.zip` from the [latest release](https://github.com/jfournier555/belay/releases). Unzip it, double-click `Belay.app`. It starts the dashboard and opens it in your browser, no Terminal.
+- **Linux:** `belay-linux` from the [latest release](https://github.com/jfournier555/belay/releases). `chmod +x belay-linux`, then `./belay-linux`: it starts the dashboard and opens it in your browser. The first run also creates a Belay launcher in the applications menu, which is the double-click path: double-clicking the bare binary in a file manager does not run it (on KDE/Dolphin it shows a "Choose Application" dialog instead), so use the launcher or the terminal route.
 
-The first run is the wizard: one question with two answers, Fill with Demo data or Run Setup Wizard. Ollama is the default LLM and is not bundled with the app (it is a separate runtime): the wizard detects it and offers to install it for you. Your data (`.env`, approvals, memory, schedules, escalations) lives in your user data folder, never next to the app: `%APPDATA%\Belay` on Windows, `~/Library/Application Support/Belay` on macOS, `~/.local/share/belay` on Linux.
+A bare `belay` with no arguments opens the dashboard the same way. `belay launch` does it explicitly, from any terminal. The CLI (`run`, `approvals`, `setup --wizard`, and the rest) stays as the power-user path.
+
+The first run is setup in the dashboard: open Settings to pick an LLM (Ollama is the default, no key) and connect your sources, or fill the dashboard with demo data from the first-run banner. The CLI wizard (`belay setup`) asks the same questions from a terminal: one question with two answers, Fill with Demo data or Run Setup Wizard. Ollama is the default LLM and is not bundled with the app (it is a separate runtime): the wizard detects it and offers to install it for you. Your data (`.env`, approvals, memory, schedules, escalations) lives in your user data folder, never next to the app: `%APPDATA%\Belay` on Windows, `~/Library/Application Support/Belay` on macOS, `~/.local/share/belay` on Linux. At the end of the CLI wizard Belay creates a desktop launcher for you, so the next launch is a double-click.
 
 Unsigned, first release: the app is not code-signed yet. The warnings, and what to click:
 - **macOS:** Gatekeeper says Belay cannot be opened because the developer cannot be verified. Right-click (Control-click) `Belay.app`, choose Open, then click Open in the dialog.
@@ -59,7 +61,7 @@ Then run the first-run wizard. It asks one question with two answers:
 ```
 
 1. **Fill with Demo data?** Seeds the stores with 4 demo drafts (one approved, one edited, two pending), 2 memory records, a daily schedule, and 3 open escalations, so the dashboard shows a lived-in harness instead of empty views. The drafts are generated through Ollama when it is reachable (real responses); otherwise they are stub-labeled and the output says so plainly. Refuses to seed over real data without explicit confirmation; clear it anytime with `python -m harness.run setup --clear-demo`.
-2. **Run Setup Wizard?** Walks the LLM provider choice plus the nine connectors (Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, Champify), writes them to `.env` preserving existing entries, and verifies each one live where a check exists. Secrets are never printed.
+2. **Run Setup Wizard?** Walks the LLM provider choice plus the ten connectors (Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, Champify, Google Calendar), writes them to `.env` preserving existing entries, and verifies each one live where a check exists. Secrets are never printed.
 
 ### The LLM: Ollama is the default
 
@@ -104,7 +106,7 @@ Job (free text or --agent + --account)
      value-finder in v0.9.0, salesforce-updater in v1.3.0, risk-watcher
      in v1.6.0, escalation-manager in v1.7.0, competitive-defense in
      v1.8.0, stakeholder-mapper in v1.9.0, case-triage in v1.10.0)
-  -> Tools (9 connectors, summary-first results)
+  -> Tools (10 connectors, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
   -> Approval queue (a human approves, rejects, or edits)
@@ -524,6 +526,7 @@ agent candidates below.
 | Zendesk | v0.8.6 | `zendesk_list_tickets`, `zendesk_search_tickets`, `zendesk_get_ticket` |
 | Linear | v0.8.7 | `linear_list_issues`, `linear_search_issues`, `linear_get_issue` |
 | Champify | v0.8.8 | `champify_list_champions`, `champify_list_job_changes`, `champify_get_champion` |
+| Google Calendar | v1.16.0, read-only | `gcal_list_events`, `gcal_get_event` |
 
 Each connector exposes its tools two ways, from one implementation
 (`tools.py`): in-process, through the harness tool registry (the v0.2 path),
@@ -540,6 +543,7 @@ python -m connectors.zoom.server
 python -m connectors.zendesk.server
 python -m connectors.linear.server
 python -m connectors.champify.server
+python -m connectors.gcal.server
 ```
 
 The MCP servers are also callable from the harness via an MCP client
