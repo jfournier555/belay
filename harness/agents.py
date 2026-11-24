@@ -695,6 +695,27 @@ def extract_links(tool_name: str, result: dict) -> list[dict]:
                         "url": "%s/champions/%s" % (base, result["id"]),
                     }
                 )
+    elif tool_name in (
+        "gcal_list_events",
+        "gcal_get_event",
+    ):
+        # Calendar links are the event URL the API returned (live)
+        # or the same path on the .invalid host (stub). The URL is
+        # passed through, never constructed, the same way Slack
+        # permalinks are.
+        if tool_name == "gcal_list_events":
+            events = result.get("events", [])
+        else:
+            events = [result] if result.get("id") else []
+        for event in events:
+            if event.get("html_link"):
+                links.append(
+                    {
+                        "label": "Calendar: %s"
+                        % event.get("summary", event.get("id", "")),
+                        "url": event["html_link"],
+                    }
+                )
     return links
 
 
@@ -983,6 +1004,7 @@ class BrieferAgent(Agent):
         calls = [
             ("salesforce_get_account", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
+            ("gcal_list_events", {"days": 7, "limit": 5, "account": account}),
         ]
         context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
@@ -992,7 +1014,8 @@ class BrieferAgent(Agent):
             self.name,
             context,
             "Draft a pre-meeting brief for account %r. Cover: who the "
-            "account is, what has changed recently, open items, and three "
+            "account is, what has changed recently, open items, upcoming "
+            "meetings from the calendar, and three "
             "sharp questions to ask in the meeting." % account,
         )
         system = (
@@ -1236,6 +1259,7 @@ class ScoutAgent(Agent):
             ("salesforce_list_opportunities", {"account": account}),
             ("salesforce_list_cases", {"account": account}),
             ("slack_search_messages", {"query": account, "limit": 5}),
+            ("gcal_list_events", {"days": 7, "limit": 5, "account": account}),
         ]
         context, sources, links = _gather(registry, calls, budget, job=job)
         memory_text = _memory_context(job, account, budget)
@@ -1245,7 +1269,8 @@ class ScoutAgent(Agent):
             self.name,
             context,
             "Scout account %r for new information. Cover: new "
-            "stakeholders and org changes, hiring signals, news, and any "
+            "stakeholders and org changes, hiring signals, news, upcoming "
+            "meetings from the calendar, and any "
             "new opportunities or risks in the account data and Slack "
             "signals." % account,
         )

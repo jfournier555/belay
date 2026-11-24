@@ -156,6 +156,9 @@ FIELD_SPECS: list[tuple[str, str, str, bool, str | None]] = [
     ("Linear", "LINEAR_API_KEY", "Linear API key", True, None),
     ("Champify", "CHAMPIFY_API_KEY", "Champify API key", True, None),
     ("Champify", "CHAMPIFY_API_BASE_URL", "Champify API base URL", False, "https://api.champify.io/v1"),
+    ("Google Calendar", "GCAL_CLIENT_ID", "Google Calendar client id", False, None),
+    ("Google Calendar", "GCAL_CLIENT_SECRET", "Google Calendar client secret", True, None),
+    ("Google Calendar", "GCAL_REFRESH_TOKEN", "Google Calendar refresh token", True, None),
 ]
 
 # Section -> Config method that says whether it is live. The LLM
@@ -171,6 +174,7 @@ SECTION_CONFIGURED = {
     "Zendesk": "zendesk_configured",
     "Linear": "linear_configured",
     "Champify": "champify_configured",
+    "Google Calendar": "gcal_configured",
 }
 
 # Raw credential fields: any one set means something is configured,
@@ -186,6 +190,7 @@ _CREDENTIAL_FIELDS = (
     "zendesk_api_token",
     "linear_api_key",
     "champify_api_key",
+    "gcal_refresh_token",
 )
 
 
@@ -536,6 +541,30 @@ def verify_champify(config: Config) -> bool:
         return False
 
 
+def verify_gcal(config: Config) -> bool:
+    """The refresh token exchanges for an access token. No calendar
+    is read: the exchange alone proves the OAuth triple works."""
+    if not (
+        config.gcal_client_id
+        and config.gcal_client_secret
+        and config.gcal_refresh_token
+    ):
+        return False
+    try:
+        response = _http_post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "client_id": config.gcal_client_id,
+                "client_secret": config.gcal_client_secret,
+                "refresh_token": config.gcal_refresh_token,
+                "grant_type": "refresh_token",
+            },
+        )
+        return _ok(response)
+    except Exception:
+        return False
+
+
 VERIFY_CHECKS = {
     "LLM": verify_llm,
     "Salesforce": verify_salesforce,
@@ -547,6 +576,7 @@ VERIFY_CHECKS = {
     "Zendesk": verify_zendesk,
     "Linear": verify_linear,
     "Champify": verify_champify,
+    "Google Calendar": verify_gcal,
 }
 
 
@@ -923,6 +953,9 @@ _DEMO_CLEAR_FIELDS = (
     "zendesk_api_token",
     "linear_api_key",
     "champify_api_key",
+    "gcal_client_id",
+    "gcal_client_secret",
+    "gcal_refresh_token",
 )
 
 

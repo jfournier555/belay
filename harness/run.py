@@ -63,6 +63,7 @@ import threading
 from dataclasses import replace
 
 from connectors.champify.tools import champify_tools
+from connectors.gcal.tools import gcal_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.hubspot.tools import hubspot_tools
@@ -115,7 +116,7 @@ from harness.writeback import (
 
 def build_registry(config: Config) -> ToolRegistry:
     """Register the connector tools (Salesforce + Slack + Gong + HubSpot
-    + Gmail + Zoom + Zendesk + Linear + Champify), then the external
+    + Gmail + Zoom + Zendesk + Linear + Champify + Google Calendar), then the external
     MCP servers the user has configured (v1.5.0).
 
     The CRM the agents gather from is Salesforce unless HubSpot is
@@ -152,6 +153,8 @@ def build_registry(config: Config) -> ToolRegistry:
     for tool in linear_tools(config):
         registry.register(tool)
     for tool in champify_tools(config):
+        registry.register(tool)
+    for tool in gcal_tools(config):
         registry.register(tool)
     try:
         store = MCPServerStore(config.mcp_servers_file)

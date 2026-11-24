@@ -178,6 +178,15 @@ def source_statuses(config: Config) -> list[dict]:
                 else "No credentials: stub data."
             ),
         },
+        {
+            "name": "Google Calendar",
+            "status": "live" if config.gcal_configured() else "stub",
+            "detail": (
+                "Connected."
+                if config.gcal_configured()
+                else "No credentials: stub data."
+            ),
+        },
     ]
 
 

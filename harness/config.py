@@ -60,6 +60,14 @@ Environment variables:
                              Bearer token.
     CHAMPIFY_API_BASE_URL    Champify API base URL. Default:
                              https://api.champify.io/v1
+    GCAL_CLIENT_ID           Google Calendar OAuth client id (Desktop app type).
+    GCAL_CLIENT_SECRET       Google Calendar OAuth client secret.
+    GCAL_REFRESH_TOKEN       Google Calendar OAuth refresh token, minted once with
+                             the readonly scope
+                             https://www.googleapis.com/auth/calendar.readonly.
+                             The connector exchanges it for an access token
+                             on every call. Read-only by scope: it can
+                             never create, update, or delete events.
     HARNESS_APPROVALS_FILE   Path to the approval-queue JSON file.
                              Default: approvals.json (in the working dir;
                              in the packaged app, the per-OS user data
@@ -170,6 +178,9 @@ class Config:
     linear_api_key: str | None = None
     champify_api_key: str | None = None
     champify_api_base_url: str = "https://api.champify.io/v1"
+    gcal_client_id: str | None = None
+    gcal_client_secret: str | None = None
+    gcal_refresh_token: str | None = None
     approvals_file: str = "approvals.json"
     memory_file: str = "memory.json"
     schedules_file: str = "schedules.json"
@@ -236,6 +247,11 @@ class Config:
             champify_api_base_url=os.environ.get(
                 "CHAMPIFY_API_BASE_URL", "https://api.champify.io/v1"
             ),
+            gcal_client_id=os.environ.get("GCAL_CLIENT_ID") or None,
+            gcal_client_secret=os.environ.get("GCAL_CLIENT_SECRET")
+            or None,
+            gcal_refresh_token=os.environ.get("GCAL_REFRESH_TOKEN")
+            or None,
             approvals_file=os.environ.get(
                 "HARNESS_APPROVALS_FILE", default_store_path("approvals.json")
             ),
@@ -328,3 +344,13 @@ class Config:
     def champify_configured(self) -> bool:
         """True when a Champify API key is present and stub mode is off."""
         return bool(self.champify_api_key and not self.stub_mode)
+
+    def gcal_configured(self) -> bool:
+        """True when the Google Calendar OAuth triple is present and
+        stub mode is off."""
+        return bool(
+            self.gcal_client_id
+            and self.gcal_client_secret
+            and self.gcal_refresh_token
+            and not self.stub_mode
+        )
