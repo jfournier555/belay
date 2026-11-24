@@ -9,7 +9,10 @@ schedules, scheduler, setup, dashboard, and the rest).
 dashboard.html ships as data next to the harness package, so the
 dashboard template loads from the bundle the same way it loads from
 source (Path(__file__).with_name("dashboard.html") resolves into the
-extraction dir).
+extraction dir). The app icon (harness/assets/belay-icon.png) ships
+the same way: the dashboard serves it as its favicon/header image,
+and the setup wizard installs it to the data dir for the desktop
+launcher.
 
 No code signing here: the first packaged release is unsigned, and
 signing is a follow-up that needs the Apple Developer account and a
@@ -26,7 +29,10 @@ a = Analysis(
     ["harness/run.py"],
     pathex=[],
     binaries=[],
-    datas=[("harness/dashboard.html", "harness")],
+    datas=[
+        ("harness/dashboard.html", "harness"),
+        ("harness/assets/belay-icon.png", "harness/assets"),
+    ],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
