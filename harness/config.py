@@ -56,10 +56,6 @@ Environment variables:
     LINEAR_API_KEY           Linear API key (Settings > API > Personal
                              API keys). Auth is the raw key in the
                              Authorization header.
-    CHAMPIFY_API_KEY         Champify API key. Auth is the raw key as a
-                             Bearer token.
-    CHAMPIFY_API_BASE_URL    Champify API base URL. Default:
-                             https://api.champify.io/v1
     GCAL_CLIENT_ID           Google Calendar OAuth client id (Desktop app type).
     GCAL_CLIENT_SECRET       Google Calendar OAuth client secret.
     GCAL_REFRESH_TOKEN       Google Calendar OAuth refresh token, minted once with
@@ -176,8 +172,6 @@ class Config:
     zendesk_email: str | None = None
     zendesk_api_token: str | None = None
     linear_api_key: str | None = None
-    champify_api_key: str | None = None
-    champify_api_base_url: str = "https://api.champify.io/v1"
     gcal_client_id: str | None = None
     gcal_client_secret: str | None = None
     gcal_refresh_token: str | None = None
@@ -243,10 +237,6 @@ class Config:
             zendesk_email=os.environ.get("ZENDESK_EMAIL") or None,
             zendesk_api_token=os.environ.get("ZENDESK_API_TOKEN") or None,
             linear_api_key=os.environ.get("LINEAR_API_KEY") or None,
-            champify_api_key=os.environ.get("CHAMPIFY_API_KEY") or None,
-            champify_api_base_url=os.environ.get(
-                "CHAMPIFY_API_BASE_URL", "https://api.champify.io/v1"
-            ),
             gcal_client_id=os.environ.get("GCAL_CLIENT_ID") or None,
             gcal_client_secret=os.environ.get("GCAL_CLIENT_SECRET")
             or None,
@@ -340,10 +330,6 @@ class Config:
     def linear_configured(self) -> bool:
         """True when a Linear API key is present and stub mode is off."""
         return bool(self.linear_api_key and not self.stub_mode)
-
-    def champify_configured(self) -> bool:
-        """True when a Champify API key is present and stub mode is off."""
-        return bool(self.champify_api_key and not self.stub_mode)
 
     def gcal_configured(self) -> bool:
         """True when the Google Calendar OAuth triple is present and

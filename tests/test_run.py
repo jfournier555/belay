@@ -76,7 +76,7 @@ class TestCli(unittest.TestCase):
         code, out = self._run(["tools", "--stub"])
         self.assertEqual(code, 0)
         lines = [line for line in out.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 31)
+        self.assertEqual(len(lines), 28)
         for prefix in (
             "salesforce_",
             "slack_",
@@ -86,7 +86,6 @@ class TestCli(unittest.TestCase):
             "zoom_",
             "zendesk_",
             "linear_",
-            "champify_",
             "gcal_",
         ):
             self.assertTrue(

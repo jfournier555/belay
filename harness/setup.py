@@ -11,7 +11,7 @@ escalations) with stub content, so the dashboard shows a lived-in
 harness instead of empty views. The demo drafts use the default LLM
 chain: Ollama when it is reachable (real responses), the stub when
 it is not, labeled as stub in the output and in the drafts. Setup
-walks the LLM provider choice plus the ten connectors, writes them
+walks the LLM provider choice plus the nine connectors, writes them
 to .env, and verifies each one where a live check exists. When
 Ollama is missing, the wizard offers to install it (official
 distribution only), explicit yes, showing the exact command first.
@@ -164,8 +164,6 @@ FIELD_SPECS: list[tuple[str, str, str, bool, str | None]] = [
     ("Zendesk", "ZENDESK_EMAIL", "Zendesk API user email", False, None),
     ("Zendesk", "ZENDESK_API_TOKEN", "Zendesk API token", True, None),
     ("Linear", "LINEAR_API_KEY", "Linear API key", True, None),
-    ("Champify", "CHAMPIFY_API_KEY", "Champify API key", True, None),
-    ("Champify", "CHAMPIFY_API_BASE_URL", "Champify API base URL", False, "https://api.champify.io/v1"),
     ("Google Calendar", "GCAL_CLIENT_ID", "Google Calendar client id", False, None),
     ("Google Calendar", "GCAL_CLIENT_SECRET", "Google Calendar client secret", True, None),
     ("Google Calendar", "GCAL_REFRESH_TOKEN", "Google Calendar refresh token", True, None),
@@ -183,7 +181,6 @@ SECTION_CONFIGURED = {
     "Zoom": "zoom_configured",
     "Zendesk": "zendesk_configured",
     "Linear": "linear_configured",
-    "Champify": "champify_configured",
     "Google Calendar": "gcal_configured",
 }
 
@@ -199,7 +196,6 @@ _CREDENTIAL_FIELDS = (
     "zoom_client_secret",
     "zendesk_api_token",
     "linear_api_key",
-    "champify_api_key",
     "gcal_refresh_token",
 )
 
@@ -534,23 +530,6 @@ def verify_linear(config: Config) -> bool:
         return False
 
 
-def verify_champify(config: Config) -> bool:
-    """One champion reads with the API key. The endpoint shapes are
-    assumed (Champify publishes no public API reference), so a fail
-    here may mean the shape is wrong, not the key: the wizard says
-    so instead of blaming the credential."""
-    if not config.champify_api_key:
-        return False
-    try:
-        response = _http_get(
-            config.champify_api_base_url.rstrip("/") + "/champions?limit=1",
-            headers={"Authorization": "Bearer " + config.champify_api_key},
-        )
-        return _ok(response)
-    except Exception:
-        return False
-
-
 def verify_gcal(config: Config) -> bool:
     """The refresh token exchanges for an access token. No calendar
     is read: the exchange alone proves the OAuth triple works."""
@@ -585,7 +564,6 @@ VERIFY_CHECKS = {
     "Zoom": verify_zoom,
     "Zendesk": verify_zendesk,
     "Linear": verify_linear,
-    "Champify": verify_champify,
     "Google Calendar": verify_gcal,
 }
 
@@ -974,7 +952,6 @@ _DEMO_CLEAR_FIELDS = (
     "zendesk_email",
     "zendesk_api_token",
     "linear_api_key",
-    "champify_api_key",
     "gcal_client_id",
     "gcal_client_secret",
     "gcal_refresh_token",
@@ -1020,8 +997,6 @@ _ENV_TO_ATTR = {
     "ZENDESK_EMAIL": "zendesk_email",
     "ZENDESK_API_TOKEN": "zendesk_api_token",
     "LINEAR_API_KEY": "linear_api_key",
-    "CHAMPIFY_API_KEY": "champify_api_key",
-    "CHAMPIFY_API_BASE_URL": "champify_api_base_url",
     "GCAL_CLIENT_ID": "gcal_client_id",
     "GCAL_CLIENT_SECRET": "gcal_client_secret",
     "GCAL_REFRESH_TOKEN": "gcal_refresh_token",
@@ -1518,7 +1493,7 @@ def run_setup_wizard(
     env_path: str = ".env",
     run_demo: bool = True,
 ) -> dict:
-    """Walk the LLM provider choice plus the ten connectors, writing
+    """Walk the LLM provider choice plus the nine connectors, writing
     to .env.
 
     The LLM step first: a provider list with Ollama the default
@@ -1628,8 +1603,6 @@ def run_setup_wizard(
         else:
             unverified.append(section)
             detail = "stub data until it works"
-            if section == "Champify":
-                detail += " (the endpoint shapes are assumed, so a fail here may mean the shape is wrong, not the key)"
             out("  %s: configured, could not verify (%s)." % (section, detail))
     if run_demo and _ask_yes_no(
         "Run a demo job now?", input_fn, default=True

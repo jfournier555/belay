@@ -163,7 +163,7 @@ class TestRegistry(unittest.TestCase):
         names = [tool.name for tool in registry.list_tools()]
         self.assertIn("gcal_list_events", names)
         self.assertIn("gcal_get_event", names)
-        self.assertEqual(len(names), 31)
+        self.assertEqual(len(names), 28)
 
     def test_event_links_come_from_the_returned_url(self):
         result = list_events(_STUB_CONFIG, account="Acme Corp")

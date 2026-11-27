@@ -15,7 +15,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-from connectors.champify.tools import champify_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.linear.tools import linear_tools
@@ -54,8 +53,6 @@ def _stub_registry() -> ToolRegistry:
     for tool in zendesk_tools(config):
         registry.register(tool)
     for tool in linear_tools(config):
-        registry.register(tool)
-    for tool in champify_tools(config):
         registry.register(tool)
     return registry
 

@@ -45,7 +45,6 @@ _ENV_KEYS = (
     "ZENDESK_EMAIL",
     "ZENDESK_API_TOKEN",
     "LINEAR_API_KEY",
-    "CHAMPIFY_API_KEY",
     "GCAL_CLIENT_ID",
     "GCAL_CLIENT_SECRET",
     "GCAL_REFRESH_TOKEN",
@@ -123,9 +122,9 @@ class TestSetupState(_EnvCleanCase):
         self.assertEqual(subdomain["value"], "acme")
         self.assertFalse(subdomain["secret"])
 
-    def test_state_covers_ten_connectors_ollama_first(self):
+    def test_state_covers_nine_connectors_ollama_first(self):
         state = setup_state(Config())
-        self.assertEqual(len(state["connectors"]), 10)
+        self.assertEqual(len(state["connectors"]), 9)
         self.assertEqual(
             [c["name"] for c in state["connectors"]],
             [
@@ -137,7 +136,6 @@ class TestSetupState(_EnvCleanCase):
                 "Zoom",
                 "Zendesk",
                 "Linear",
-                "Champify",
                 "Google Calendar",
             ],
         )
@@ -237,7 +235,7 @@ class TestSetupEndpoints(_EnvCleanCase):
         self.assertEqual(res.status_code, 200)
         body = res.json()
         self.assertEqual(body["llm"]["provider"], "ollama")
-        self.assertEqual(len(body["connectors"]), 10)
+        self.assertEqual(len(body["connectors"]), 9)
         gcal = next(
             c for c in body["connectors"] if c["name"] == "Google Calendar"
         )

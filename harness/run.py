@@ -67,7 +67,6 @@ import sys
 import threading
 from dataclasses import replace
 
-from connectors.champify.tools import champify_tools
 from connectors.gcal.tools import gcal_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
@@ -121,7 +120,7 @@ from harness.writeback import (
 
 def build_registry(config: Config) -> ToolRegistry:
     """Register the connector tools (Salesforce + Slack + Gong + HubSpot
-    + Gmail + Zoom + Zendesk + Linear + Champify + Google Calendar), then the external
+    + Gmail + Zoom + Zendesk + Linear + Google Calendar), then the external
     MCP servers the user has configured (v1.5.0).
 
     The CRM the agents gather from is Salesforce unless HubSpot is
@@ -157,8 +156,6 @@ def build_registry(config: Config) -> ToolRegistry:
         registry.register(tool)
     for tool in linear_tools(config):
         registry.register(tool)
-    for tool in champify_tools(config):
-        registry.register(tool)
     for tool in gcal_tools(config):
         registry.register(tool)
     try:
@@ -181,7 +178,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     --demo fills the stores with demo data (refuses over real
     data unless --yes). --wizard walks the LLM provider choice and
-    the ten connectors, writing .env. --clear-demo removes only the seeded
+    the nine connectors, writing .env. --clear-demo removes only the seeded
     records. With no flag and an interactive terminal, it asks the
     one question with two answers; without a terminal it says so
     and exits 2."""

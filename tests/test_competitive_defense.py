@@ -16,7 +16,6 @@ import os
 import tempfile
 import unittest
 
-from connectors.champify.tools import champify_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.salesforce.tools import salesforce_tools
@@ -53,8 +52,6 @@ def _stub_registry() -> ToolRegistry:
         registry.register(tool)
     for tool in zendesk_tools(config):
         registry.register(tool)
-    for tool in champify_tools(config):
-        registry.register(tool)
     return registry
 
 
@@ -75,7 +72,6 @@ def _empty_registry() -> ToolRegistry:
         "salesforce_get_account": account,
         "salesforce_list_opportunities": lambda **kw: {"opportunities": []},
         "salesforce_list_cases": lambda **kw: {"cases": []},
-        "champify_list_champions": lambda **kw: {"champions": []},
         "gmail_search_messages": lambda **kw: {"matches": []},
         "gong_search_transcripts": lambda **kw: {"matches": []},
         "zoom_search_transcripts": lambda **kw: {"matches": []},
@@ -145,7 +141,6 @@ class TestCompetitiveDefenseRuns(unittest.TestCase):
             "salesforce_get_account",
             "salesforce_list_opportunities",
             "salesforce_list_cases",
-            "champify_list_champions",
             "gmail_search_messages",
             "gong_search_transcripts",
             "zoom_search_transcripts",
@@ -218,8 +213,8 @@ class TestCompetitiveDefenseRuns(unittest.TestCase):
                         "MARKER risk-watcher draft for Acme Corp.",
                         [
                             {
-                                "label": "Champion: Dana Reyes",
-                                "url": "https://app.champify.invalid/champions/chp_7f3a91",
+                                "label": "Slack: Acme Corp signal",
+                                "url": "https://stub.slack.invalid/archives/C123/p123",
                             }
                         ],
                     ),
@@ -243,7 +238,7 @@ class TestCompetitiveDefenseRuns(unittest.TestCase):
                 urls,
             )
             self.assertIn(
-                "https://app.champify.invalid/champions/chp_7f3a91", urls
+                "https://stub.slack.invalid/archives/C123/p123", urls
             )
             # Fresh signals still fire in the composed path: the Gmail
             # displacement and the Gong evaluation are gathered directly,

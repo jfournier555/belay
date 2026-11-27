@@ -779,8 +779,8 @@ class TestWizard(unittest.TestCase):
         self.addCleanup(self._http_post.stop)
 
     def _blank_connector_answers(self):
-        # One blank answer per connector field (22 fields, ten connectors).
-        return [""] * 22
+        # One blank answer per connector field (20 fields, nine connectors).
+        return [""] * 20
 
     def test_wizard_writes_ollama_to_env(self):
         with open(self.env_path, "w", encoding="utf-8") as f:

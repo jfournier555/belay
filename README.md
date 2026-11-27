@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v0.17.0**, 15 agents, 10 connectors, 689 tests green.
+**A post sales AI harness.** Current version: **v0.17.0**, 15 agents, 9 connectors, 670 tests green.
 
 ![Belay: AI that does the post-sales busywork. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -61,7 +61,7 @@ Then run the first-run wizard. It asks one question with two answers:
 ```
 
 1. **Fill with Demo data?** Seeds the stores with 4 demo drafts (one approved, one edited, two pending), 2 memory records, a daily schedule, and 3 open escalations, so the dashboard shows a lived-in harness instead of empty views. The drafts are generated through Ollama when it is reachable (real responses); otherwise they are stub-labeled and the output says so plainly. Refuses to seed over real data without explicit confirmation; clear it anytime with `python -m harness.run setup --clear-demo`.
-2. **Run Setup Wizard?** Walks the LLM provider choice plus the ten connectors (Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, Champify, Google Calendar), writes them to `.env` preserving existing entries, and verifies each one live where a check exists. Secrets are never printed.
+2. **Run Setup Wizard?** Walks the LLM provider choice plus the nine connectors (Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, Google Calendar), writes them to `.env` preserving existing entries, and verifies each one live where a check exists. Secrets are never printed.
 
 ### The LLM: Ollama is the default
 
@@ -106,7 +106,7 @@ Job (free text or --agent + --account)
      value-finder in v0.9.0, salesforce-updater in v1.3.0, risk-watcher
      in v1.6.0, escalation-manager in v1.7.0, competitive-defense in
      v1.8.0, stakeholder-mapper in v1.9.0, case-triage in v1.10.0)
-  -> Tools (10 connectors, summary-first results)
+  -> Tools (9 connectors, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
   -> Approval queue (a human approves, rejects, or edits)
@@ -525,7 +525,6 @@ agent candidates below.
 | Zoom | v0.8.5 | `zoom_list_recordings`, `zoom_get_recording_summary`, `zoom_search_transcripts` |
 | Zendesk | v0.8.6 | `zendesk_list_tickets`, `zendesk_search_tickets`, `zendesk_get_ticket` |
 | Linear | v0.8.7 | `linear_list_issues`, `linear_search_issues`, `linear_get_issue` |
-| Champify | v0.8.8 | `champify_list_champions`, `champify_list_job_changes`, `champify_get_champion` |
 | Google Calendar | v1.16.0, read-only | `gcal_list_events`, `gcal_get_event` |
 
 Each connector exposes its tools two ways, from one implementation
@@ -542,7 +541,6 @@ python -m connectors.gmail.server
 python -m connectors.zoom.server
 python -m connectors.zendesk.server
 python -m connectors.linear.server
-python -m connectors.champify.server
 python -m connectors.gcal.server
 ```
 
@@ -571,7 +569,7 @@ in-process connector tools.
   links to the records it cites; failures are flagged in the draft
   metadata and shown in `approvals show`, never a block, and no
   aggregate score is shown anywhere.
-- Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, and Champify MCP servers: verified over the real MCP protocol
+- Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, and Linear MCP servers: verified over the real MCP protocol
   (a client connected over stdio, listed tools, called one, got a result).
 - The demo loop (`run` -> draft -> approval queue) in stub mode.
 - Scheduling: file-backed schedules (daily/weekly, named timezone),
@@ -595,21 +593,17 @@ in-process connector tools.
 - The live Salesforce REST/SOQL calls, the live Slack Web API calls,
   the live Gong REST API calls, the live HubSpot CRM API calls, the
   live Gmail API calls, the live Zoom API calls, the live Zendesk API
-  calls, the live Linear GraphQL API calls, the live Champify API calls,
+  calls, the live Linear GraphQL API calls,
   and the live Salesforce write calls (PATCH for field changes and
   stage moves, POST for activity logs). They are real code, written
   against the documented APIs, but no credentials were available while
   building v0.2 (Salesforce/Slack), v0.8.2 (Gong), v0.8.3 (HubSpot),
   v0.8.4 (Gmail), v0.8.5 (Zoom), v0.8.6 (Zendesk), v0.8.7 (Linear),
-  v0.8.8 (Champify), or v1.3.0 (Salesforce writes), so they have not run
+  or v1.3.0 (Salesforce writes), so they have not run
   against a real org, workspace, Gong account, HubSpot portal, mailbox,
-  Zoom account, Zendesk instance, Linear workspace, or Champify account.
+  Zoom account, Zendesk instance, or Linear workspace.
   Treat them as "written, not verified" until someone runs them with
-  real credentials. Stub mode is what runs in the demo and the tests. One caveat, for Champify only:
-  Champify publishes no public API reference, so its endpoint shapes
-  are assumed from the product's data model, not from documentation,
-  and must be corrected against the real API the first time a key is
-  available.
+  real credentials. Stub mode is what runs in the demo and the tests.
 
 **Shipped in the v1 line, nothing scaffolded left:**
 - Architecture pieces: composition (v1.1.0), memory (v1.2.0),

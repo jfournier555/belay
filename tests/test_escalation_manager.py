@@ -20,7 +20,6 @@ import os
 import tempfile
 import unittest
 
-from connectors.champify.tools import champify_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.linear.tools import linear_tools
@@ -67,8 +66,6 @@ def _stub_registry() -> ToolRegistry:
         registry.register(tool)
     for tool in linear_tools(config):
         registry.register(tool)
-    for tool in champify_tools(config):
-        registry.register(tool)
     return registry
 
 
@@ -89,8 +86,6 @@ def _empty_registry() -> ToolRegistry:
         "salesforce_get_account": account,
         "salesforce_list_opportunities": lambda **kw: {"opportunities": []},
         "salesforce_list_cases": lambda **kw: {"cases": []},
-        "champify_list_job_changes": lambda **kw: {"job_changes": []},
-        "champify_list_champions": lambda **kw: {"champions": []},
         "gmail_search_messages": lambda **kw: {"matches": []},
         "gong_search_transcripts": lambda **kw: {"matches": []},
         "zoom_search_transcripts": lambda **kw: {"matches": []},
@@ -165,18 +160,14 @@ class TestEscalationManagerRuns(unittest.TestCase):
         job = self._job()
         draft = agent.run(job, self.registry, self.llm, self.budget)
         self.assertEqual(draft.agent, "escalation-manager")
-        # The stub data fires three high signals: the Priya Nair
-        # and Tom Okafor departures and the SSO failure across three
-        # systems. The plan names all three, with the harness-written
+        # The stub data fires one high signal: the SSO failure across
+        # three systems. The plan names it, with the harness-written
         # structure.
         self.assertIn("Escalation plan", draft.text)
         self.assertIn("Overall severity: high", draft.text)
-        self.assertIn("Priya Nair", draft.text)
-        self.assertIn("Tom Okafor", draft.text)
         self.assertIn("SSO login fails for new hires", draft.text)
         self.assertIn("People to loop in", draft.text)
         self.assertIn("Jane CSM (account owner, Salesforce)", draft.text)
-        self.assertIn("Dana Reyes (VP Operations, active champion)", draft.text)
         self.assertIn("The ask", draft.text)
         self.assertIn("Exec update", draft.text)
         self.assertIn("Customer comms", draft.text)
@@ -186,13 +177,13 @@ class TestEscalationManagerRuns(unittest.TestCase):
         # One record per high signal, all open.
         store = EscalationStore(self.esc_path)
         records = store.for_account("Acme Corp")
-        self.assertEqual(len(records), 3)
+        self.assertEqual(len(records), 1)
         self.assertTrue(all(r.status == "open" for r in records))
         keys = {r.signal_key for r in records}
-        self.assertIn("champion-departure:priya nair", keys)
-        self.assertIn("champion-departure:tom okafor", keys)
-        self.assertIn("support-delivery:sso login fails for new hires", keys)
-        self.assertEqual(len(job["escalation_records"]), 3)
+        self.assertEqual(
+            keys, {"support-delivery:sso login fails for new hires"}
+        )
+        self.assertEqual(len(job["escalation_records"]), 1)
 
     def test_second_run_suppresses_the_duplicate(self):
         agent = AGENTS["escalation-manager"]
@@ -221,7 +212,7 @@ class TestEscalationManagerRuns(unittest.TestCase):
         self.assertNotIn("Escalation plan", draft2.text)
         self.assertTrue(draft2.proof_passed)
         store = EscalationStore(self.esc_path)
-        self.assertEqual(len(store.for_account("Acme Corp")), 3)
+        self.assertEqual(len(store.for_account("Acme Corp")), 1)
 
     def test_rejected_plan_can_be_redrafted(self):
         agent = AGENTS["escalation-manager"]
@@ -248,7 +239,7 @@ class TestEscalationManagerRuns(unittest.TestCase):
         self.assertIn("Escalation plan", draft2.text)
         self.assertIn("The ask", draft2.text)
         store = EscalationStore(self.esc_path)
-        self.assertEqual(len(store.for_account("Acme Corp")), 3)
+        self.assertEqual(len(store.for_account("Acme Corp")), 1)
 
     def test_approve_moves_records_to_escalated(self):
         agent = AGENTS["escalation-manager"]
@@ -282,14 +273,14 @@ class TestEscalationManagerRuns(unittest.TestCase):
         store = EscalationStore(self.esc_path)
         for record in store.for_account("Acme Corp"):
             self.assertTrue(store.resolve(record.id, note="Done."))
-        # Both signals still fire in the stub data, but both records
-        # are resolved: no new plan is drafted.
+        # The signal still fires in the stub data, but its record
+        # is resolved: no new plan is drafted.
         draft2 = agent.run(
             self._job(), self.registry, self.llm, self.budget
         )
         self.assertNotIn("The ask", draft2.text)
         self.assertIn("resolved", draft2.text)
-        self.assertEqual(len(store.for_account("Acme Corp")), 3)
+        self.assertEqual(len(store.for_account("Acme Corp")), 1)
 
     def test_closure_draft_resolves_through_approval(self):
         agent = AGENTS["escalation-manager"]
@@ -317,7 +308,7 @@ class TestEscalationManagerRuns(unittest.TestCase):
         draft2 = agent.run(job2, _empty_registry(), self.llm, self.budget)
         self.assertIn("Escalation closure", draft2.text)
         self.assertIn("mark them resolved", draft2.text)
-        self.assertEqual(len(job2["escalation_resolve"]), 3)
+        self.assertEqual(len(job2["escalation_resolve"]), 1)
         self.assertTrue(draft2.proof_passed)
         item2 = queue.submit(
             agent=draft2.agent,
@@ -379,9 +370,9 @@ class TestEscalationManagerRuns(unittest.TestCase):
             "https://stub.salesforce.invalid/lightning/r/Account/001STUB/view",
             urls,
         )
-        # Fresh signals still fire in the composed path: the departure
-        # is gathered directly, not from the old draft.
-        self.assertIn("Priya Nair", draft.text)
+        # Fresh signals still fire in the composed path: the SSO
+        # failure is gathered directly, not from the old draft.
+        self.assertIn("SSO login fails for new hires", draft.text)
         self.assertIn("Escalation plan", draft.text)
         self.assertTrue(draft.proof_passed)
 
@@ -470,18 +461,6 @@ class TestEscalationStore(unittest.TestCase):
 class TestSignalKeys(unittest.TestCase):
     def test_high_signals_carry_stable_keys(self):
         results = {
-            "champify_list_job_changes": {
-                "job_changes": [
-                    {
-                        "name": "Priya Nair",
-                        "previous_company": "Acme Corp",
-                        "previous_role": "Head of Support",
-                        "new_company": "Globex Inc",
-                        "new_role": "VP Customer Experience",
-                        "changed_at": "2026-11-02",
-                    }
-                ]
-            },
             "salesforce_list_cases": {
                 "cases": [
                     {
@@ -508,9 +487,6 @@ class TestSignalKeys(unittest.TestCase):
         signals = _risk_signals(results, "Acme Corp")
         keys = {s["kind"]: s.get("key") for s in signals}
         self.assertEqual(
-            keys.get("champion-departure"), "champion-departure:priya nair"
-        )
-        self.assertEqual(
             keys.get("support-delivery"),
             "support-delivery:sso login fails for new hires",
         )
@@ -522,33 +498,25 @@ class TestSignalKeys(unittest.TestCase):
 
 class TestEscalationPlanBlock(unittest.TestCase):
     def test_ask_and_fallback_differ_per_kind(self):
-        kinds = ("champion-departure", "support-delivery", "renewal-stalled")
+        kinds = ("support-delivery", "renewal-stalled")
         asks = {_escalation_ask({"kind": k}) for k in kinds}
         fallbacks = {_escalation_fallback({"kind": k}) for k in kinds}
-        self.assertEqual(len(asks), 3)
-        self.assertEqual(len(fallbacks), 3)
+        self.assertEqual(len(asks), 2)
+        self.assertEqual(len(fallbacks), 2)
         self.assertIn(
-            "mandate", _escalation_ask({"kind": "champion-departure"})
+            "named owner", _escalation_ask({"kind": "support-delivery"})
         )
         self.assertIn(
-            "exit plan", _escalation_fallback({"kind": "champion-departure"})
+            "executive sponsor",
+            _escalation_fallback({"kind": "support-delivery"}),
         )
 
-    def test_people_to_loop_in_names_owner_and_champions(self):
+    def test_people_to_loop_in_names_owner(self):
         results = {
             "salesforce_get_account": {"owner": "Jane CSM"},
-            "champify_list_champions": {
-                "champions": [
-                    {"name": "Dana Reyes", "role": "VP Operations", "status": "active"},
-                    {"name": "Priya Nair", "role": "Head of Support", "status": "moved"},
-                ]
-            },
         }
         people = _people_to_loop_in(results)
-        self.assertIn("Jane CSM (account owner, Salesforce)", people)
-        self.assertIn("Dana Reyes (VP Operations, active champion)", people)
-        # The departed champion is not someone to loop in.
-        self.assertFalse(any("Priya Nair" in p for p in people))
+        self.assertEqual(people, ["Jane CSM (account owner, Salesforce)"])
 
 
 class TestEscalationManagerRouting(unittest.TestCase):

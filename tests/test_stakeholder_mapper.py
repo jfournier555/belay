@@ -16,7 +16,6 @@ import os
 import tempfile
 import unittest
 
-from connectors.champify.tools import champify_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
 from connectors.salesforce.tools import salesforce_tools
@@ -54,8 +53,6 @@ def _stub_registry() -> ToolRegistry:
         registry.register(tool)
     for tool in zoom_tools(config):
         registry.register(tool)
-    for tool in champify_tools(config):
-        registry.register(tool)
     return registry
 
 
@@ -74,8 +71,6 @@ def _empty_registry() -> ToolRegistry:
 
     handlers = {
         "salesforce_get_account": account,
-        "champify_list_champions": lambda **kw: {"champions": []},
-        "champify_list_job_changes": lambda **kw: {"job_changes": []},
         "gmail_search_messages": lambda **kw: {"matches": []},
         "gong_list_calls": lambda **kw: {"calls": []},
         "gong_search_transcripts": lambda **kw: {"matches": []},
@@ -144,8 +139,6 @@ class TestStakeholderMapperRuns(unittest.TestCase):
         self.assertEqual(draft.agent, "stakeholder-mapper")
         for tool in (
             "salesforce_get_account",
-            "champify_list_champions",
-            "champify_list_job_changes",
             "gmail_search_messages",
             "gong_list_calls",
             "gong_search_transcripts",
@@ -154,37 +147,29 @@ class TestStakeholderMapperRuns(unittest.TestCase):
             "slack_search_messages",
         ):
             self.assertIn(tool, draft.sources)
-        # The stub account maps to eight people: four champions
-        # (two active, two moved), the account owner and the SE on
-        # our side, and two customer contacts known by display name
-        # or handle.
+        # The stub account maps to four people: the account owner
+        # and the SE on our side, and two customer contacts known by
+        # display name or handle. No champion source exists any more,
+        # so no champion is named.
         for name in (
-            "Dana Reyes",
-            "Marcus Webb",
-            "Priya Nair",
-            "Tom Okafor",
             "Jane CSM",
             "Mike SE",
             "Acme Admin",
             "acme-ops-lead",
         ):
             self.assertIn(name, draft.text)
+        self.assertNotIn("Dana Reyes", draft.text)
+        self.assertNotIn("Priya Nair", draft.text)
         self.assertIn("Stakeholder map", draft.text)
         self.assertIn("Coverage gaps", draft.text)
         self.assertIn("Relationships", draft.text)
-        # Roles and influence are harness-computed: the active
-        # champions are high, the moved champions are former with
-        # unknown influence, and the handle-only contact is unknown.
-        self.assertIn("Dana Reyes: champion (VP Operations), influence high", draft.text)
-        self.assertIn("Marcus Webb: champion (Director of IT), influence high", draft.text)
-        self.assertIn("Priya Nair: former champion (Head of Support), influence unknown", draft.text)
+        # Roles and influence are harness-computed: the handle-only
+        # contact is unknown.
         self.assertIn("acme-ops-lead: unknown, influence unknown", draft.text)
-        # The gaps: no economic buyer, two departed champions with
-        # no successor named, two people known only by display name
-        # or handle, and no customer-customer relationship visible.
+        # The gaps: no economic buyer, two people known only by
+        # display name or handle, and no customer-customer
+        # relationship visible.
         self.assertIn("No economic buyer identified", draft.text)
-        self.assertIn("Priya Nair (Head of Support, former champion) left the account on 2026-11-02", draft.text)
-        self.assertIn("Tom Okafor (Senior Engineer, former champion) left the account on 2026-09-20", draft.text)
         self.assertIn("Acme Admin and acme-ops-lead known only by a display name or handle", draft.text)
         self.assertIn("No two customer stakeholders appear together", draft.text)
         self.assertTrue(draft.links)
@@ -216,8 +201,8 @@ class TestStakeholderMapperRuns(unittest.TestCase):
                         "MARKER advocate-finder draft for Acme Corp.",
                         [
                             {
-                                "label": "Champion: Dana Reyes",
-                                "url": "https://app.champify.invalid/champions/chp_7f3a91",
+                                "label": "Slack: Acme Corp praise",
+                                "url": "https://stub.slack.invalid/archives/C123/p123",
                             }
                         ],
                     ),
@@ -248,18 +233,16 @@ class TestStakeholderMapperRuns(unittest.TestCase):
             )
             urls = [link.get("url") for link in draft.links]
             self.assertIn(
-                "https://app.champify.invalid/champions/chp_7f3a91", urls
+                "https://stub.slack.invalid/archives/C123/p123", urls
             )
             self.assertIn(
                 "https://stub.salesforce.invalid/lightning/r/Account/001STUB/view",
                 urls,
             )
             # Fresh person signals still fire in the composed path:
-            # the champions and the Gmail authors are gathered
-            # directly, not from the old drafts.
-            self.assertIn("Dana Reyes", draft.text)
+            # the Gmail authors are gathered directly, not from the
+            # old drafts.
             self.assertIn("Acme Admin", draft.text)
-            self.assertIn("champify_list_champions", draft.sources)
             self.assertIn("gmail_search_messages", draft.sources)
             # Transcripts come from the prior drafts here, not from a
             # fresh gather.
@@ -325,7 +308,7 @@ class TestStakeholderMapperRuns(unittest.TestCase):
                 draft.text,
             )
             self.assertNotIn("gong_search_transcripts", draft.sources)
-            self.assertIn("Dana Reyes", draft.text)
+            self.assertIn("Acme Admin", draft.text)
         finally:
             for p in (path, mem_path):
                 if os.path.exists(p):
@@ -341,12 +324,10 @@ class TestStakeholderMapperRuns(unittest.TestCase):
 
 
 class TestStakeholderPeople(unittest.TestCase):
-    def _results(self, champions=None, changes=None, account=None):
+    def _results(self, account=None):
         results = {
             "salesforce_get_account": account
             or {"owner": "Jane CSM", "name": "Acme Corp"},
-            "champify_list_champions": {"champions": champions or []},
-            "champify_list_job_changes": {"job_changes": changes or []},
             "gmail_search_messages": {"matches": []},
             "gong_list_calls": {"calls": []},
             "gong_search_transcripts": {"matches": []},
@@ -380,44 +361,47 @@ class TestStakeholderPeople(unittest.TestCase):
         self.assertEqual(by_key["acme admin"]["side"], "customer")
 
     def test_active_champion_is_high_influence(self):
-        results = self._results(
-            champions=[
-                {
-                    "name": "Dana Reyes",
-                    "role": "VP Operations",
-                    "status": "active",
-                    "champion_since": "2025-06-01",
-                }
-            ]
-        )
-        people = _stakeholder_people(results)
-        dana = [p for p in people if p["name"] == "Dana Reyes"][0]
+        # The champion record is built directly now: no connector
+        # feeds champion_status any more, but the role and influence
+        # helpers still score it.
+        dana = {
+            "key": "dana reyes",
+            "name": "Dana Reyes",
+            "title": "VP Operations",
+            "side": "customer",
+            "sources": {"salesforce_get_account"},
+            "evidence": ["Champion record (VP Operations, active)"],
+            "champion_status": "active",
+            "champion_since": "2025-06-01",
+            "moved_to": None,
+            "promoted": None,
+            "is_owner": False,
+            "handle_only": False,
+            "emails": set(),
+        }
         self.assertEqual(_stakeholder_role(dana), "champion")
         self.assertEqual(_stakeholder_influence(dana), "high")
 
     def test_moved_champion_is_former_with_unknown_influence(self):
-        results = self._results(
-            champions=[
-                {
-                    "name": "Priya Nair",
-                    "role": "Head of Support",
-                    "status": "moved",
-                    "champion_since": "2025-03-10",
-                }
-            ],
-            changes=[
-                {
-                    "name": "Priya Nair",
-                    "previous_company": "Acme Corp",
-                    "previous_role": "Head of Support",
-                    "new_company": "Globex Inc",
-                    "new_role": "VP Customer Experience",
-                    "changed_at": "2026-11-02",
-                }
-            ],
-        )
-        people = _stakeholder_people(results)
-        priya = [p for p in people if p["name"] == "Priya Nair"][0]
+        priya = {
+            "key": "priya nair",
+            "name": "Priya Nair",
+            "title": "Head of Support",
+            "side": "customer",
+            "sources": {"salesforce_get_account"},
+            "evidence": ["Champion record (Head of Support, moved)"],
+            "champion_status": "moved",
+            "champion_since": "2025-03-10",
+            "moved_to": {
+                "company": "Globex Inc",
+                "role": "VP Customer Experience",
+                "changed_at": "2026-11-02",
+            },
+            "promoted": None,
+            "is_owner": False,
+            "handle_only": False,
+            "emails": set(),
+        }
         self.assertEqual(_stakeholder_role(priya), "former champion")
         self.assertEqual(_stakeholder_influence(priya), "unknown")
         self.assertEqual(priya["moved_to"]["company"], "Globex Inc")
@@ -515,47 +499,59 @@ class TestStakeholderPeople(unittest.TestCase):
         self.assertNotIn(("acme admin", "acme ops lead"), by_pair)
 
     def test_gaps_name_what_is_missing(self):
-        results = self._results(
-            champions=[
-                {
-                    "name": "Priya Nair",
-                    "role": "Head of Support",
-                    "status": "moved",
-                    "champion_since": "2025-03-10",
-                }
-            ],
-            changes=[
-                {
-                    "name": "Priya Nair",
-                    "previous_company": "Acme Corp",
-                    "previous_role": "Head of Support",
-                    "new_company": "Globex Inc",
-                    "new_role": "VP Customer Experience",
-                    "changed_at": "2026-11-02",
-                }
-            ],
-        )
-        people = _stakeholder_people(results)
-        rels = _stakeholder_relationships(results)
-        gaps = _stakeholder_gaps(people, rels)
+        # The departed champion is built directly now: the gap logic
+        # still names a moved champion with no successor.
+        priya = {
+            "key": "priya nair",
+            "name": "Priya Nair",
+            "title": "Head of Support",
+            "side": "customer",
+            "sources": {"salesforce_get_account"},
+            "evidence": ["Champion record (Head of Support, moved)"],
+            "champion_status": "moved",
+            "champion_since": "2025-03-10",
+            "moved_to": {
+                "company": "Globex Inc",
+                "role": "VP Customer Experience",
+                "changed_at": "2026-11-02",
+            },
+            "promoted": None,
+            "is_owner": False,
+            "handle_only": False,
+            "emails": set(),
+        }
+        owner = {
+            "key": "jane csm",
+            "name": "Jane CSM",
+            "title": "",
+            "side": "internal",
+            "sources": {"salesforce_get_account"},
+            "evidence": ["Account owner (Salesforce)"],
+            "champion_status": None,
+            "champion_since": None,
+            "moved_to": None,
+            "promoted": None,
+            "is_owner": True,
+            "handle_only": False,
+            "emails": set(),
+        }
+        gaps = _stakeholder_gaps([priya, owner], [])
         self.assertTrue(any("No economic buyer" in g for g in gaps))
         self.assertTrue(
             any("Priya Nair" in g and "no successor" in g for g in gaps)
         )
 
-    def test_single_champion_map_still_has_buyer_gap(self):
-        # Dana is the only customer person: the buyer gap fires (no
+    def test_single_customer_map_still_has_buyer_gap(self):
+        # Cora is the only customer person: the buyer gap fires (no
         # record names a budget holder) and so does the
         # no-customer-relationship gap (one person cannot connect to
         # anyone), while no departed-champion gap fires.
         results = self._results()
-        results["champify_list_champions"] = {
-            "champions": [
+        results["gmail_search_messages"] = {
+            "matches": [
                 {
-                    "name": "Dana Reyes",
-                    "role": "VP Operations",
-                    "status": "active",
-                    "champion_since": "2025-06-01",
+                    "author": "Cora Finch <cora@acme.example>",
+                    "thread_id": "t1",
                 }
             ]
         }
