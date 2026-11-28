@@ -90,6 +90,10 @@
   .pill.rejected { background: #331414; color: var(--red); }
   .pill.edited { background: #332e14; color: var(--amber); }
   .pill.pending { background: #1c2534; color: var(--blue); }
+  .pill.high { background: #331414; color: var(--red); }
+  .pill.medium { background: #332e14; color: var(--amber); }
+  .pill.low { background: #1c2534; color: var(--blue); }
+  .pill.none { background: #1c2534; color: var(--muted); }
   .source .detail { color: var(--muted); font-size: 12px; }
   .agent { padding: 8px 0; border-top: 1px solid var(--line); }
   .agent:first-of-type { border-top: none; }
@@ -238,6 +242,10 @@
           <div id="tokens"></div>
         </div>
       </div>
+    </div>
+    <div class="card">
+      <h2>Risk sweep</h2>
+      <div id="sweep"></div>
     </div>
   </section>
 
@@ -419,6 +427,7 @@ function render(state) {
   }).join("");
   renderAgents(state);
   renderQueue(state);
+  renderSweep(state);
   renderMemory(state);
   renderSchedules(state);
   renderEscalations(state);
@@ -563,6 +572,38 @@ function openEditor(id) {
         { method: "POST", headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ draft: text }) });
     } catch (e) { alert(e.message); return; }
+    loadState();
+  });
+}
+function renderSweep(state) {
+  var el = document.getElementById("sweep");
+  var sw = state.sweep || { ran_at: null, results: [], gaps: [] };
+  var head = '<div class="actions"><button class="approve small" data-run-sweep>Run sweep</button>' +
+    (sw.ran_at ? '<span class="note">Last run ' + esc(sw.ran_at) + ' · ' + sw.accounts + ' account' +
+      (sw.accounts === 1 ? "" : "s") + '</span>' : "") + '</div>';
+  if (!sw.ran_at) {
+    el.innerHTML = head + '<div class="empty">No sweep yet. Run one to rank the whole book by risk, worst first.</div>';
+  } else if (!sw.results.length) {
+    el.innerHTML = head + '<div class="empty">Sweep ran but found no accounts.' +
+      (sw.gaps.length ? '<br>' + sw.gaps.map(esc).join("<br>") : "") + '</div>';
+  } else {
+    var rows = sw.results.map(function (r) {
+      return '<tr><td><b>' + esc(r.account) + '</b></td>' +
+        '<td><span class="pill ' + esc(r.severity) + '">' + esc(r.severity) + '</span></td>' +
+        '<td>' + esc(r.top_signal) + '</td>' +
+        '<td>' + (r.renewal_date ? esc(r.renewal_date) : "—") + '</td></tr>';
+    }).join("");
+    el.innerHTML = head + '<table><tr><th>Account</th><th>Severity</th><th>Top signal</th><th>Renewal</th></tr>' +
+      rows + '</table>' +
+      (sw.gaps.length ? '<div class="note">' + sw.gaps.map(esc).join("<br>") + '</div>' : "");
+  }
+  el.querySelector("[data-run-sweep]").addEventListener("click", async function () {
+    var btn = el.querySelector("[data-run-sweep]");
+    btn.disabled = true;
+    btn.textContent = "Running…";
+    try {
+      await api("/api/sweep", { method: "POST" });
+    } catch (e) { alert(e.message); }
     loadState();
   });
 }

@@ -53,6 +53,7 @@ from .scheduler import (
 )
 from .setup import is_first_run, seed_demo
 from .summarizer import estimate_tokens
+from .sweep import SweepStore, run_sweep
 
 _TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
 
@@ -287,6 +288,13 @@ def queue_view(queue: ApprovalQueue) -> list[dict]:
     return [_queue_item_dict(item) for item in ordered]
 
 
+def sweep_view(store: SweepStore) -> dict:
+    """The stored risk sweep: the last ranked book-wide result, or
+    the empty state when no sweep has run yet. A missing or corrupt
+    sweep file reads as empty, never a crash."""
+    return store.load()
+
+
 def build_state(
     queue: ApprovalQueue,
     config: Config,
@@ -294,6 +302,7 @@ def build_state(
     schedules: ScheduleStore | None = None,
     escalations: EscalationStore | None = None,
     mcp_servers: MCPServerStore | None = None,
+    sweep: SweepStore | None = None,
 ) -> dict:
     """Everything the page renders, in one dict.
 
@@ -306,10 +315,12 @@ def build_state(
     schedules = schedules or ScheduleStore(config.schedules_file)
     escalations = escalations or EscalationStore(config.escalations_file)
     mcp_servers = mcp_servers or MCPServerStore(config.mcp_servers_file)
+    sweep = sweep or SweepStore(config.sweep_file)
     return {
         "version": __version__,
         "stats": queue_stats(queue),
         "overview": overview_stats(queue, memory, schedules, escalations),
+        "sweep": sweep_view(sweep),
         "sources": source_statuses(config),
         "agents": agent_states(queue),
         "queue": queue_view(queue),
@@ -656,6 +667,26 @@ def create_app(
                 "example": result["example"],
             }
         )
+
+    @app.post("/api/sweep")
+    def run_sweep_endpoint() -> JSONResponse:
+        # Risk sweep (v0.18.2): run risk-watcher's signal logic
+        # across the whole book, rank it, and store it for the
+        # Overview page. Runs on demand, not on every state call:
+        # the state endpoint only reads the stored result, so the
+        # 30-second poll stays fast. The sweep itself takes as long
+        # as the book takes to gather (nine calls per account); a
+        # book of ten stub accounts is seconds, a live book longer.
+        # The result is stored before it is returned, so a refresh
+        # right after shows the same sweep.
+        from harness.run import build_registry
+
+        try:
+            result = run_sweep(build_registry(cfg), cfg)
+        except Exception as exc:  # noqa: BLE001 - reported, never a stack trace
+            raise HTTPException(status_code=500, detail=str(exc))
+        SweepStore(cfg.sweep_file).save(result)
+        return JSONResponse(result)
 
     @app.post("/api/approvals/{item_id}/approve")
     def approve(item_id: str) -> JSONResponse:

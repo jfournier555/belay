@@ -190,6 +190,7 @@ class Config:
     schedules_file: str = "schedules.json"
     mcp_servers_file: str = "mcp-servers.json"
     escalations_file: str = "escalations.json"
+    sweep_file: str = "sweep.json"
     token_budget_per_job: int = 8000
     loaded_hourly_rate: float | None = None
     csv_accounts_file: str | None = None
@@ -267,6 +268,9 @@ class Config:
             ),
             escalations_file=os.environ.get(
                 "HARNESS_ESCALATIONS_FILE", default_store_path("escalations.json")
+            ),
+            sweep_file=os.environ.get(
+                "HARNESS_SWEEP_FILE", default_store_path("sweep.json")
             ),
             token_budget_per_job=int(
                 os.environ.get("HARNESS_TOKEN_BUDGET", "8000")

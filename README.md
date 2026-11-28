@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v0.17.0**, 15 agents, 10 connectors, 703 tests green.
+**A post sales AI harness.** Current version: **v0.17.0**, 15 agents, 10 connectors, 725 tests green.
 
 ![Belay: AI that does the post-sales busywork. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -169,6 +169,12 @@ python -m harness.run run --agent value-finder --account "Acme Corp" --stub --ho
 # See the fifteen agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
+
+# Sweep the whole book for risk and rank it, worst first. No drafts
+# are queued and no LLM is called: the sweep is risk-watcher's own
+# harness-computed signals, ranked. The result is stored for the
+# Overview page (and shown there on the next dashboard load).
+python -m harness.run sweep --stub
 
 # Review and approve the draft. <id> is a placeholder: copy a real
 # draft id from `approvals list` (in fish, typing <id> literally
@@ -461,7 +467,10 @@ files, all numbers from real harness state, nothing invented.
 - **Overview:** the queue stat strip (accounts watched, at-risk
   drafts, drafts ready, advocates found) plus the harness beyond the
   queue (open escalations, due schedules, accounts with memory, write
-  drafts pending), sources, event log, token budget.
+  drafts pending), sources, event log, token budget, and the risk
+  sweep: the whole book ranked by risk-watcher's signals (severity,
+  then renewal proximity), with a Run sweep button. A sweep runs on
+  demand, never on page load, so the 30-second state poll stays fast.
 - **Queue:** every draft with its completeness check and source
   links; approve, edit, and reject call the same approval queue the
   CLI uses, and an edit is recorded as memory with the correction.

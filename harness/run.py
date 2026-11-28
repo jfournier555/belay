@@ -28,6 +28,7 @@ Usage:
     python -m harness.run escalations list
     python -m harness.run escalations show <id>
     python -m harness.run escalations resolve <id> [--note "..."]
+    python -m harness.run sweep [--stub]
     python -m harness.run setup [--demo | --wizard | --clear-demo]
     python -m harness.run dashboard [--port 8000]
     python -m harness.run launch [--port 8000]
@@ -902,6 +903,42 @@ def cmd_escalations(args: argparse.Namespace) -> int:
     return 1
 
 
+def cmd_sweep(args: argparse.Namespace) -> int:
+    """Sweep the whole book for risk, rank it, store it for the
+    Overview page. Prints the ranked table: severity, account,
+    renewal date, top signal. No drafts are queued and no LLM is
+    called: the sweep is the harness-computed signals, ranked. A
+    book with no accounts prints the gaps and exits 0; an empty
+    book is a state to report, not a failure."""
+    from harness.sweep import SweepStore, run_sweep
+
+    config = Config.from_env()
+    if args.stub:
+        config.stub_mode = True
+    registry = build_registry(config)
+    result = run_sweep(registry, config)
+    SweepStore(config.sweep_file).save(result)
+    if not result["results"]:
+        print("Sweep found no accounts.")
+        for gap in result["gaps"]:
+            print("  Gap: %s" % gap)
+        return 0
+    print(
+        "Risk sweep: %d account(s), worst first (ran %s)."
+        % (result["accounts"], result["ran_at"])
+    )
+    for row in result["results"]:
+        renewal = row["renewal_date"] or "no renewal date"
+        print(
+            "  [%-6s] %-28s %s  %s"
+            % (row["severity"], row["account"], renewal, row["top_signal"])
+        )
+    for gap in result["gaps"]:
+        print("  Gap: %s" % gap)
+    print("Saved to %s." % config.sweep_file)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="cs-harness",
@@ -1002,6 +1039,10 @@ def build_parser() -> argparse.ArgumentParser:
     esc_p.add_argument("--account", help="Account name, for list.")
     esc_p.add_argument("--note", help="Note to attach when resolving.")
     esc_p.set_defaults(func=cmd_escalations)
+
+    sweep_p = sub.add_parser("sweep", help="Sweep the whole book for risk, rank it, store it for the Overview page.")
+    sweep_p.add_argument("--stub", action="store_true", help="Force stub mode (no creds, no network).")
+    sweep_p.set_defaults(func=cmd_sweep)
     return parser
 
 
