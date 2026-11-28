@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Belay
+Comment=Post-sales AI harness
+Exec=belay launch
+Terminal=false
+Categories=Office;
+StartupWMClass=Belay
+Icon=belay

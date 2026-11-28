@@ -1,0 +1,17 @@
+pkgbase = belay
+	pkgdesc = Post-sales AI harness: routing, tools, memory and approvals around the model
+	pkgver = 0.18.3
+	pkgrel = 1
+	url = https://github.com/jfournier555/belay
+	arch = x86_64
+	license = MIT
+	depends = glibc
+	options = !strip
+	source = belay-linux-0.18.3::https://github.com/jfournier555/belay/releases/download/v0.18.3/belay-linux
+	source = belay.desktop
+	source = belay-icon.png
+	sha256sums = SKIP
+	sha256sums = SKIP
+	sha256sums = SKIP
+
+pkgname = belay

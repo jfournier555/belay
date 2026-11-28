@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v0.18.2**, 22 agents, 10 connectors, 1030 tests green.
+**A post sales AI harness.** Current version: **v0.18.2**, 22 agents, 10 connectors, 1043 tests green.
 
 ![Belay: AI that does the post-sales busywork. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -10,11 +10,23 @@ Belay is the sequel to ["AI is taking the admin. The judgment is the job."](http
 
 ## First run
 
-Download one file, no Python, no terminal:
+Install it like a real app, no Python, no terminal:
 
-- **Windows:** `belay.exe` from the [latest release](https://github.com/jfournier555/belay/releases). Double-click it: it starts the dashboard and opens it in your browser.
+- **Windows:** `Belay-Setup-<version>.exe` from the [latest release](https://github.com/jfournier555/belay/releases). Run it: Start Menu shortcut, optional desktop icon and PATH entry. Or the bare `belay.exe`: double-click it and the dashboard opens in your browser.
 - **macOS:** `Belay-macos.dmg` from the [latest release](https://github.com/jfournier555/belay/releases). Double-click it, then drag `Belay.app` to Applications. It starts the dashboard and opens it in your browser, no Terminal.
-- **Linux:** `belay-linux` from the [latest release](https://github.com/jfournier555/belay/releases). `chmod +x belay-linux`, then `./belay-linux`: it starts the dashboard and opens it in your browser. The first run also creates a Belay launcher in the applications menu, which is the double-click path: double-clicking the bare binary in a file manager does not run it (on KDE/Dolphin it shows a "Choose Application" dialog instead), so use the launcher or the terminal route.
+- **Linux:** `belay_<version>_amd64.deb` from the [latest release](https://github.com/jfournier555/belay/releases): double-click it in your file manager, or `sudo apt install ./belay_<version>_amd64.deb`. It installs `belay` plus an app menu entry. Or `Belay-<version>-x86_64.AppImage`: `chmod +x` it and double-click to run. Or the bare `belay-linux`: `chmod +x belay-linux`, then `./belay-linux`. On Arch, the AUR package (`yay -S belay`, PKGBUILD in `packaging/aur/`) installs the same binary. The first run also creates a Belay launcher in the applications menu, which is the double-click path: double-clicking the bare binary in a file manager does not run it (on KDE/Dolphin it shows a "Choose Application" dialog instead), so use the launcher or the terminal route.
+
+Install from the command line, if that is your way:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/jfournier555/belay/main/packaging/install.sh | bash
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/jfournier555/belay/main/packaging/install.ps1 | iex"
+```
+
+Linux installs `belay` to `~/.local/bin`; macOS installs `Belay.app` to `/Applications` and links `belay` to `~/.local/bin`; Windows installs to `%LOCALAPPDATA%\Programs\Belay` and adds it to your user PATH. Latest release by default. To pin one, download the script first (`BELAY_VERSION=0.18.3 bash install.sh`, or `.\install.ps1 -Version 0.18.3`). Re-running is safe: it overwrites the binary.
 
 A bare `belay` with no arguments opens the dashboard the same way. `belay launch` does it explicitly, from any terminal. The CLI (`run`, `approvals`, `setup --wizard`, and the rest) stays as the power-user path.
 
@@ -22,7 +34,7 @@ The first run is setup in the dashboard: open Settings to pick an LLM (Ollama is
 
 Unsigned, first release: the app is not code-signed yet. The warnings, and what to click:
 - **macOS:** Gatekeeper says Belay cannot be opened because the developer cannot be verified. Right-click (Control-click) `Belay.app`, choose Open, then click Open in the dialog.
-- **Windows:** SmartScreen says Windows protected your PC. Click More info, then Run anyway.
+- **Windows:** SmartScreen says Windows protected your PC. Click More info, then Run anyway. The installer is unsigned too, so it shows the same warning.
 - **Linux:** no warning; the executable bit is the only step.
 
 Build from source, if the download is not for you. One command, from clone to a running harness:
@@ -35,13 +47,17 @@ bash bootstrap.sh
 
 That creates `.venv`, installs the dependencies, installs Belay, copies `.env.example` to `.env` when `.env` is missing, prints one line about Ollama, then launches the first-run wizard. Re-running it is safe: an existing `.venv` is reused and an existing `.env` is left alone. It never asks you to activate anything, so it works the same from bash, zsh, and fish.
 
-Windows:
+Windows, from source:
 
 ```powershell
-.\bootstrap.ps1
+git clone https://github.com/jfournier555/belay.git
+cd belay
+py -m venv .venv
+.\.venv\Scripts\pip.exe install -r requirements.txt
+.\.venv\Scripts\pip.exe install -e .
+Copy-Item .env.example .env
+.\.venv\Scripts\python.exe -m harness.run setup
 ```
-
-If the execution policy blocks it, run `powershell -ExecutionPolicy Bypass -File .\bootstrap.ps1`. The script mirrors the same steps. It has not been run on Windows yet (the build machine is Linux); the manual steps below are the fallback if it fails.
 
 Manual install, if the script is not for you:
 

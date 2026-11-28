@@ -11,15 +11,20 @@
 # available here. The README documents the Gatekeeper and SmartScreen
 # warnings the user clicks through.
 #
-# Per-OS artifacts (one file each):
-# - Windows: belay.exe (the bare executable)
+# Per-OS artifacts (one file each, plus the installers):
+# - Windows: belay.exe (the bare executable) and Belay-Setup-<ver>.exe
+#            (Inno Setup installer: Start Menu shortcut, optional PATH)
 # - macOS:   Belay-macos.dmg (a disk image holding Belay.app plus an
 #            Applications symlink, the standard drag-to-Applications
 #            install). The .app is a thin launcher: double-clicking it
 #            runs `belay launch`, which starts the dashboard and opens
 #            it in the browser, with no terminal. First-run setup
 #            happens in the dashboard Settings view.
-# - Linux:   belay-linux (the bare executable, chmod +x)
+# - Linux:   belay-linux (the bare executable, chmod +x),
+#            belay_<ver>_amd64.deb (apt install, app menu entry) and
+#            Belay-<ver>-x86_64.AppImage (double-click to run).
+# The AUR PKGBUILD lives in packaging/aur/: AUR builds happen on the
+# user's Arch machine, not in this workflow.
 name: Release
 
 on:
@@ -60,6 +65,19 @@ jobs:
         if: matrix.os == 'windows-latest'
         shell: cmd
         run: copy dist\belay.exe belay.exe
+      - name: Install Inno Setup
+        if: matrix.os == 'windows-latest'
+        run: choco install innosetup -y
+      - name: Build Windows installer
+        if: matrix.os == 'windows-latest'
+        run: |
+          $version = "${{ github.ref_name }}".TrimStart("v")
+          iscc "/DMyAppVersion=$version" packaging\windows\belay.iss
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'windows-latest'
+        with:
+          name: Belay-Setup.exe
+          path: Belay-Setup-*.exe
       - name: Package (macOS)
         if: matrix.os == 'macos-latest'
         run: |
@@ -110,6 +128,28 @@ jobs:
         run: |
           cp dist/belay belay-linux
           chmod +x belay-linux
+      - name: Build .deb package
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          bash packaging/linux/build-deb.sh belay-linux "$VERSION"
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: belay-deb
+          path: belay_*_amd64.deb
+      - name: Build AppImage
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          curl -fsSL -o appimagetool-x86_64.AppImage https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+          APPIMAGETOOL="$PWD/appimagetool-x86_64.AppImage" bash packaging/linux/build-appimage.sh belay-linux "$VERSION"
+      - uses: actions/upload-artifact@v4
+        if: matrix.os == 'ubuntu-latest'
+        with:
+          name: Belay-AppImage
+          path: Belay-*-x86_64.AppImage
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
@@ -129,4 +169,7 @@ jobs:
             artifacts/belay.exe
             artifacts/Belay-macos.dmg
             artifacts/belay-linux
+            artifacts/Belay-Setup-*.exe
+            artifacts/belay_*_amd64.deb
+            artifacts/Belay-*-x86_64.AppImage
           generate_release_notes: true

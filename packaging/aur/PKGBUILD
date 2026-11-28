@@ -1,0 +1,31 @@
+# Maintainer: Justin Fournier
+# Belay: post-sales AI harness (binary release package).
+#
+# The PKGBUILD tracks the latest GitHub release: bump pkgver on each
+# release, pin the binary hash with `makepkg -g`, then rebuild
+# .SRCINFO with `makepkg --printsrcinfo > .SRCINFO`.
+# The .desktop file and icon ship in the AUR repo alongside this
+# PKGBUILD (copies of packaging/linux/belay.desktop and
+# harness/assets/belay-icon.png). The binary hash is SKIP here because
+# it is not known until the release binary exists; pin it on the bump.
+pkgname=belay
+pkgver=0.18.3
+pkgrel=1
+pkgdesc="Post-sales AI harness: routing, tools, memory and approvals around the model"
+arch=('x86_64')
+url="https://github.com/jfournier555/belay"
+license=('MIT')
+depends=('glibc')
+source=("belay-linux-${pkgver}::https://github.com/jfournier555/belay/releases/download/v${pkgver}/belay-linux"
+        "belay.desktop"
+        "belay-icon.png")
+sha256sums=('SKIP'
+            'SKIP'
+            'SKIP')
+options=('!strip')
+
+package() {
+  install -Dm755 "${srcdir}/belay-linux-${pkgver}" "${pkgdir}/usr/bin/belay"
+  install -Dm644 "${srcdir}/belay.desktop" "${pkgdir}/usr/share/applications/belay.desktop"
+  install -Dm644 "${srcdir}/belay-icon.png" "${pkgdir}/usr/share/pixmaps/belay.png"
+}

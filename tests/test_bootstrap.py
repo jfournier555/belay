@@ -175,20 +175,26 @@ class BootstrapShTest(unittest.TestCase):
 
 
 class BootstrapPs1Test(unittest.TestCase):
-    def test_powershell_script_mirrors_the_steps(self):
-        with open(BOOTSTRAP_PS1, encoding="utf-8") as f:
+    def test_one_windows_install_script(self):
+        # bootstrap.ps1 (v1.13.0, from-source, never run on Windows)
+        # was replaced by packaging/install.ps1 (binary download):
+        # one Windows install script, not two competing ones.
+        ps1 = os.path.join(REPO, "packaging", "install.ps1")
+        self.assertFalse(os.path.exists(BOOTSTRAP_PS1))
+        self.assertTrue(os.path.exists(ps1))
+        with open(ps1, encoding="utf-8") as f:
             text = f.read()
         for needle in (
-            ".venv",
-            "requirements.txt",
-            "pip install -e .",
-            ".env.example",
-            "harness.run setup",
-            "Ollama",
-            "3.11",
+            # The URL is built from $Repo, so the literal host+repo
+            # never appears; both parts are checked instead.
+            "jfournier555/belay",
+            "github.com/$Repo",
+            "belay.exe",
+            "Programs\\Belay",
+            "Belay.lnk",
+            "launch",
         ):
             self.assertIn(needle, text)
-        self.assertNotIn("activate", text)
         self.assertEqual(text.count("{"), text.count("}"))
         self.assertEqual(text.count("("), text.count(")"))
 
