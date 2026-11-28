@@ -24,6 +24,7 @@ from harness.config import (
     Config,
 )
 from harness.llm import (
+    STUB_CONTEXT_MARKER,
     OpenAICompatibleLLM,
     StubLLM,
     _model_pulled,
@@ -47,6 +48,89 @@ class TestStubLLM(unittest.TestCase):
         # its header says Ollama is not reachable and points at setup.
         self.assertIn("Ollama", StubLLM.STUB_HEADER)
         self.assertIn("setup", StubLLM.STUB_HEADER)
+
+    def test_stub_summarizes_each_tool_on_one_line(self):
+        # A stub draft reads like a summary, not a raw dump: one
+        # line per tool, counts plus headline facts, no raw dicts.
+        # The Acme context is the one from the v0.18.0 Windows
+        # first-run test: the wall of record dicts a human reads as
+        # word salad.
+        context = (
+            "- salesforce_list_opportunities: account: Acme Corp; "
+            "source: csv; opportunities: [{'name': 'Acme Corp - "
+            "Renewal FY27', 'id': 'csv:acme-corp:opp', 'stage': "
+            "'Negotiation', 'amount': 120000, 'close_date': "
+            "'2027-02-15', 'type': 'Renewal'}]; gaps: []\n"
+            "- salesforce_list_cases: account: Acme Corp; cases: "
+            "[{'number': None, 'subject': 'SSO login fails for new "
+            "hires', 'status': 'Working', 'priority': 'High', "
+            "'age_days': 6}, {'number': None, 'subject': 'Export "
+            "timeout on large reports', 'status': 'New', 'priority': "
+            "'Medium', 'age_days': 2}]; gaps: []\n"
+            "- slack_search_messages: _stub: True; query: Acme Corp; "
+            "matches: [{'author': 'jane-csm', 'channel': "
+            "'#acme-corp', 'excerpt': \"Acme's admin asked about SSO "
+            "again.\"}]\n"
+        )
+        out = StubLLM().complete(
+            "Task: draft a renewal plan for Acme Corp\n\nContext:\n" + context
+        )
+        summary, _, _full = out.partition(STUB_CONTEXT_MARKER)
+        self.assertIn("STUB DRAFT", summary)
+        self.assertIn("salesforce_list_opportunities: ", summary)
+        self.assertIn("1 record", summary)
+        self.assertIn("Acme Corp - Renewal FY27", summary)
+        self.assertIn("Negotiation", summary)
+        self.assertIn("2 records", summary)
+        self.assertIn("SSO login fails for new hires", summary)
+        self.assertIn("1 record", summary)
+        # No raw dicts in the summary: the record literals stay
+        # behind the marker.
+        self.assertNotIn("{'name'", summary)
+        self.assertNotIn("'stage':", summary)
+        self.assertNotIn("'subject':", summary)
+        self.assertNotIn("'excerpt':", summary)
+        # One line per tool in the summary body.
+        tool_lines = [
+            line
+            for line in summary.splitlines()
+            if line.startswith("- salesforce_")
+            or line.startswith("- slack_")
+        ]
+        self.assertEqual(len(tool_lines), 3)
+        for line in tool_lines:
+            self.assertLessEqual(len(line), 240)
+
+    def test_stub_keeps_full_context_behind_the_marker(self):
+        context = (
+            "- salesforce_list_opportunities: account: Acme Corp; "
+            "opportunities: [{'name': 'Acme Corp - Renewal FY27', "
+            "'stage': 'Negotiation'}]; gaps: []\n"
+        )
+        out = StubLLM().complete(
+            "Task: draft a renewal plan\n\nContext:\n" + context
+        )
+        self.assertIn(STUB_CONTEXT_MARKER, out)
+        _summary, _, full = out.partition(STUB_CONTEXT_MARKER)
+        self.assertIn("{'name': 'Acme Corp - Renewal FY27'", full)
+        self.assertIn("'stage': 'Negotiation'", full)
+
+    def test_stub_summary_truncates_long_values(self):
+        context = (
+            "- gmail_search_messages: query: Acme Corp; matches: "
+            "[{'subject': '" + "word " * 100 + "', 'author': 'x'}]\n"
+        )
+        out = StubLLM().complete("Task: t\n\nContext:\n" + context)
+        summary = out.partition(STUB_CONTEXT_MARKER)[0]
+        for line in summary.splitlines():
+            if line.startswith("- gmail_"):
+                self.assertLessEqual(len(line), 240)
+                self.assertIn("…", line)
+
+    def test_stub_without_context_has_no_marker(self):
+        out = StubLLM().complete("Task: do a thing.\n")
+        self.assertIn("STUB DRAFT", out)
+        self.assertNotIn(STUB_CONTEXT_MARKER, out)
 
     @mock.patch("harness.llm.ollama_reachable", return_value=False)
     def test_get_llm_returns_stub_without_key(self, _mock_reachable):

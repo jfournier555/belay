@@ -181,6 +181,32 @@
     padding: 1px 5px; border-radius: 4px;
   }
   .first-run .actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .wizard-steps {
+    display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 12px;
+    color: var(--muted); font-size: 12px;
+  }
+  .wizard-steps .step { padding: 3px 10px; border: 1px solid var(--line); border-radius: 999px; }
+  .wizard-steps .step.current { color: var(--text); border-color: var(--blue); font-weight: 600; }
+  .wizard-steps .step.done { color: var(--green); border-color: var(--green); }
+  .wizard-body { margin-bottom: 12px; }
+  .wizard-body p { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+  .wizard-body code {
+    color: var(--text); background: var(--bg);
+    padding: 1px 5px; border-radius: 4px;
+  }
+  .wizard-status {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    padding: 10px 12px; white-space: pre-wrap; font-size: 12px;
+    max-height: 200px; overflow-y: auto; margin: 8px 0; color: var(--muted);
+  }
+  .wizard-status .ok { color: var(--green); }
+  .wizard-status .bad { color: var(--red); }
+  .wizard-nav { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  details.stub-context { margin: 8px 0; }
+  details.stub-context summary {
+    cursor: pointer; color: var(--muted); font-size: 12px;
+  }
+  details.stub-context .draft { margin-top: 6px; }
   .write-line { font-size: 12px; color: var(--muted); margin-top: 4px; }
   .write-line b { color: var(--text); }
   .write-line .applied { color: var(--green); }
@@ -354,6 +380,15 @@ function esc(s) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 var currentView = "overview";
+var lastState = null;
+// First-run wizard state: the wizard owns its own polling and
+// step, so the 30-second loadState must never rebuild it mid-flow.
+var wizardOpen = false;
+var wizardDismissed = false;
+var wizardFailed = false;
+var wizardStep = 1;
+var wizardReady = false;
+var wizardPollTimer = null;
 document.querySelectorAll("#nav button").forEach(function (btn) {
   btn.addEventListener("click", function () {
     currentView = btn.dataset.view;
@@ -387,27 +422,8 @@ function statCard(label, num, hint, warn) {
 function render(state) {
   document.getElementById("version").textContent =
     "v" + state.version + (state.stub_mode ? " · stub mode" : "");
-  var fr = document.getElementById("first-run");
-  if (state.first_run) {
-    fr.innerHTML = '<div class="first-run"><h2>First run: nothing is set up yet</h2>' +
-      '<p>The stores are empty and no credentials are configured. Fill them with demo data to see a lived-in harness, or open Settings above to pick an LLM (Ollama is the default, no key) and connect your sources. The CLI wizard still works too: <code>python -m harness.run setup</code>.</p>' +
-      '<div class="actions"><button class="approve" id="demo-seed-btn">Fill with demo data</button>' +
-      '<span class="note">or open Settings above</span></div>' +
-      '<div class="form-error" id="first-run-error"></div></div>';
-    document.getElementById("demo-seed-btn").addEventListener("click", async function () {
-      var btn = this; btn.disabled = true;
-      try {
-        await api("/api/demo/seed", { method: "POST" });
-      } catch (e) {
-        document.getElementById("first-run-error").textContent = e.message;
-        btn.disabled = false;
-        return;
-      }
-      loadState();
-    });
-  } else {
-    fr.innerHTML = "";
-  }
+  lastState = state;
+  renderFirstRun(state);
   var s = state.stats;
   document.getElementById("stats").innerHTML =
     statCard("Accounts watched", s.accounts_watched, "distinct accounts in the queue") +
@@ -457,6 +473,296 @@ function render(state) {
       agentSelect.appendChild(opt);
     });
   }
+}
+function renderFirstRun(state) {
+  // First run opens the setup wizard itself. The banner is only the
+  // fallback: when the wizard cannot open, or the user dismissed
+  // it for this session. The 30-second poll must not rebuild the
+  // wizard while the user is mid-flow, so an open wizard is left
+  // alone and the wizard manages its own polling.
+  var fr = document.getElementById("first-run");
+  if (!state.first_run) {
+    fr.innerHTML = "";
+    wizardOpen = false;
+    wizardDismissed = false;
+    wizardFailed = false;
+    return;
+  }
+  if (wizardOpen) return;
+  if (wizardDismissed || wizardFailed) {
+    renderFirstRunBanner(state);
+    return;
+  }
+  openWizard(state);
+}
+function renderFirstRunBanner(state) {
+  var fr = document.getElementById("first-run");
+  fr.innerHTML = '<div class="first-run"><h2>First run: nothing is set up yet</h2>' +
+    '<p>The stores are empty and no credentials are configured. Fill them with demo data to see a lived-in harness, or run the setup wizard to pick an LLM (Ollama is the default, no key) and connect your sources. The CLI wizard still works too: <code>' + esc(state.setup_command) + '</code>.</p>' +
+    '<div class="actions"><button class="approve" id="demo-seed-btn">Fill with demo data</button>' +
+    '<button id="wizard-open-btn">Open setup wizard</button>' +
+    '<span class="note">or open Settings above</span></div>' +
+    '<div class="form-error" id="first-run-error"></div></div>';
+  document.getElementById("demo-seed-btn").addEventListener("click", async function () {
+    var btn = this; btn.disabled = true;
+    try {
+      await api("/api/demo/seed", { method: "POST" });
+    } catch (e) {
+      document.getElementById("first-run-error").textContent = e.message;
+      btn.disabled = false;
+      return;
+    }
+    loadState();
+  });
+  document.getElementById("wizard-open-btn").addEventListener("click", function () {
+    wizardDismissed = false;
+    wizardFailed = false;
+    wizardOpen = false;
+    openWizard(lastState);
+  });
+}
+function openWizard(state) {
+  wizardOpen = true;
+  wizardStep = 1;
+  wizardReady = false;
+  var fr = document.getElementById("first-run");
+  fr.innerHTML = '<div class="first-run wizard"><h2>Set up Belay</h2>' +
+    '<div class="wizard-steps" id="wizard-steps"></div>' +
+    '<div class="wizard-body" id="wizard-body"></div>' +
+    '<div class="wizard-nav">' +
+    '<button id="wizard-back">Back</button>' +
+    '<button class="approve" id="wizard-next">Next</button>' +
+    '<button id="wizard-skip">Not now</button></div>' +
+    '<div class="form-error" id="wizard-error"></div></div>';
+  document.getElementById("wizard-back").addEventListener("click", function () {
+    if (wizardStep > 1) { wizardStep -= 1; renderWizardStep(); }
+  });
+  document.getElementById("wizard-next").addEventListener("click", function () {
+    if (wizardStep === 3) { dismissWizard(); return; }
+    if (wizardStep === 1 && !wizardReady) return;
+    wizardStep += 1;
+    renderWizardStep();
+  });
+  document.getElementById("wizard-skip").addEventListener("click", dismissWizard);
+  renderWizardStep();
+}
+function dismissWizard() {
+  // Done or Not now: close the wizard for this session and fall
+  // back to the banner, which keeps an Open setup wizard button.
+  // First run is still true (nothing is configured), so the banner
+  // is the honest state; the wizard reopens from the button.
+  if (wizardPollTimer) { clearInterval(wizardPollTimer); wizardPollTimer = null; }
+  wizardOpen = false;
+  wizardDismissed = true;
+  renderFirstRunBanner(lastState);
+}
+function wizardStepsHtml() {
+  var steps = ["1 · Language model", "2 · Connectors", "3 · Demo data"];
+  return steps.map(function (label, i) {
+    var n = i + 1;
+    var cls = n === wizardStep ? "current" : (n < wizardStep ? "done" : "");
+    return '<span class="step ' + cls + '">' + label + '</span>';
+  }).join("");
+}
+function renderWizardStep() {
+  if (!wizardOpen) return;
+  document.getElementById("wizard-steps").innerHTML = wizardStepsHtml();
+  document.getElementById("wizard-back").style.display =
+    wizardStep === 1 ? "none" : "";
+  var next = document.getElementById("wizard-next");
+  next.textContent = wizardStep === 3 ? "Done" : "Next";
+  next.disabled = wizardStep === 1 && !wizardReady;
+  document.getElementById("wizard-error").textContent = "";
+  if (wizardStep === 1) renderWizardStep1();
+  else if (wizardStep === 2) renderWizardStep2();
+  else renderWizardStep3();
+}
+async function renderWizardStep1() {
+  // Step 1 is the LLM, Ollama default, with an Install Ollama
+  // button that runs the install server-side and verifies it.
+  // Next stays disabled until Belay can actually draft: Ollama up
+  // with the model pulled, or a hosted provider configured. The
+  // CLI wizard stays as the power-user path; this is the GUI one.
+  var body = document.getElementById("wizard-body");
+  if (!body) return;
+  body.innerHTML = "<p>Checking Ollama…</p>";
+  var status, setup;
+  try {
+    status = await api("/api/setup/ollama");
+    setup = await api("/api/setup");
+  } catch (e) {
+    // The wizard cannot open: fall back to the banner.
+    wizardFailed = true;
+    wizardOpen = false;
+    renderFirstRunBanner(lastState);
+    return;
+  }
+  if (!wizardOpen || wizardStep !== 1) return;
+  var hostedReady = setup.llm.provider !== "ollama" && setup.llm.api_key_set;
+  wizardReady = (status.reachable && status.model_pulled) || hostedReady;
+  var html = "";
+  if (status.reachable && status.model_pulled) {
+    html += '<p><span class="ok">Ollama is up and ' + esc(status.model) + ' is pulled.</span> Belay drafts with it, on this machine, no key.</p>';
+  } else if (status.reachable) {
+    html += '<p>Ollama is up, but <code>' + esc(status.model) + '</code> is not pulled yet. Pull it to start drafting (about 4.9 GB).</p>' +
+      '<div class="actions"><button class="approve" id="wizard-pull-btn">Pull ' + esc(status.model) + '</button></div>';
+  } else if (status.cli_present) {
+    html += '<p>Ollama is installed but the server is not running.</p>' +
+      '<div class="actions"><button class="approve" id="wizard-serve-btn">Start Ollama</button></div>';
+  } else if (status.install_available) {
+    html += '<p>Ollama is not installed. The wizard can install it for you (official distribution only). It runs:</p>' +
+      status.install_commands.map(function (c) {
+        return '<p><code>' + esc(c) + '</code></p>';
+      }).join("") +
+      '<div class="actions"><button class="approve" id="wizard-install-btn">Install Ollama</button></div>' +
+      '<p class="note">The install takes a few minutes. You can watch it here; nothing else needs you.</p>';
+  } else {
+    html += '<p>Ollama is not installed, and there is no automated install path for this system (' + esc(status.system) + '). Get it at ollama.com/download, then come back here.</p>';
+  }
+  if (hostedReady) {
+    html += '<p><span class="ok">A hosted provider is configured (' + esc(setup.llm.provider) + ').</span> Belay drafts with it.</p>';
+  } else {
+    html += '<p class="note">Or pick a hosted provider instead: open Settings above, choose a provider, save its API key, then come back here.</p>';
+  }
+  html += '<div class="wizard-status" id="wizard-status" style="display: none;"></div>';
+  body.innerHTML = html;
+  document.getElementById("wizard-next").disabled = !wizardReady;
+  var installBtn = document.getElementById("wizard-install-btn");
+  if (installBtn) installBtn.addEventListener("click", async function () {
+    installBtn.disabled = true;
+    try {
+      var job = await api("/api/setup/ollama/install", { method: "POST" });
+      pollWizardJob(job.id);
+    } catch (e) {
+      document.getElementById("wizard-error").textContent = e.message;
+      installBtn.disabled = false;
+    }
+  });
+  var pullBtn = document.getElementById("wizard-pull-btn");
+  if (pullBtn) pullBtn.addEventListener("click", async function () {
+    pullBtn.disabled = true;
+    try {
+      var job = await api("/api/setup/ollama/pull",
+        { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ model: status.model }) });
+      pollWizardJob(job.id);
+    } catch (e) {
+      document.getElementById("wizard-error").textContent = e.message;
+      pullBtn.disabled = false;
+    }
+  });
+  var serveBtn = document.getElementById("wizard-serve-btn");
+  if (serveBtn) serveBtn.addEventListener("click", async function () {
+    serveBtn.disabled = true;
+    try {
+      await api("/api/setup/ollama/serve", { method: "POST" });
+      pollWizardReachable(15);
+    } catch (e) {
+      document.getElementById("wizard-error").textContent = e.message;
+      serveBtn.disabled = false;
+    }
+  });
+}
+async function pollWizardJob(jobId) {
+  // An install or a pull takes minutes: poll the job every two
+  // seconds and show its progress lines. On done, re-check Ollama
+  // status (the step re-renders with the model-pull offer or the
+  // green check). On failure, say so plainly in the error line.
+  var box = document.getElementById("wizard-status");
+  if (!box) return;
+  box.style.display = "";
+  wizardPollTimer = setInterval(async function () {
+    if (!wizardOpen || wizardStep !== 1) {
+      clearInterval(wizardPollTimer);
+      wizardPollTimer = null;
+      return;
+    }
+    var job;
+    try {
+      job = await api("/api/setup/ollama/jobs/" + encodeURIComponent(jobId));
+    } catch (e) {
+      clearInterval(wizardPollTimer);
+      wizardPollTimer = null;
+      document.getElementById("wizard-error").textContent = e.message;
+      return;
+    }
+    box.textContent = (job.lines || []).join("\n") || "Working…";
+    box.scrollTop = box.scrollHeight;
+    if (job.status === "done") {
+      clearInterval(wizardPollTimer);
+      wizardPollTimer = null;
+      renderWizardStep1();
+    } else if (job.status === "failed") {
+      clearInterval(wizardPollTimer);
+      wizardPollTimer = null;
+      document.getElementById("wizard-error").textContent =
+        job.error || "The install failed.";
+    }
+  }, 2000);
+}
+async function pollWizardReachable(triesLeft) {
+  // The server takes seconds to come up after a start: poll the
+  // status endpoint until it answers, then re-render step 1.
+  if (!wizardOpen || wizardStep !== 1) return;
+  var status;
+  try {
+    status = await api("/api/setup/ollama");
+  } catch (e) {
+    document.getElementById("wizard-error").textContent = e.message;
+    return;
+  }
+  if (status.reachable || triesLeft <= 0) {
+    renderWizardStep1();
+    return;
+  }
+  setTimeout(function () { pollWizardReachable(triesLeft - 1); }, 2000);
+}
+async function renderWizardStep2() {
+  // Step 2 is connectors, reusing the Settings connector config:
+  // the same fields, the same endpoint, rendered inside the
+  // wizard instead of the Settings tab. Connectors are optional:
+  // without them Belay drafts from realistic sample data.
+  var body = document.getElementById("wizard-body");
+  if (!body) return;
+  body.innerHTML = '<p>Connectors are optional. Add one now, or skip to the demo: without credentials Belay drafts from realistic sample data.</p>' +
+    '<div id="wizard-connectors"></div>' +
+    '<div class="form-error" id="wizard-connectors-error"></div>' +
+    '<div class="note" id="wizard-connectors-status"></div>';
+  var setup;
+  try {
+    setup = await api("/api/setup");
+  } catch (e) {
+    document.getElementById("wizard-error").textContent = e.message;
+    return;
+  }
+  if (!wizardOpen || wizardStep !== 2) return;
+  renderConnectors(setup, {
+    el: document.getElementById("wizard-connectors"),
+    errEl: document.getElementById("wizard-connectors-error"),
+    statusEl: document.getElementById("wizard-connectors-status"),
+  });
+}
+function renderWizardStep3() {
+  // Step 3 is demo data or done. Seeding flips first_run false,
+  // so the wizard closes and the dashboard shows the lived-in
+  // harness. Done dismisses the wizard for the session and falls
+  // back to the banner.
+  var body = document.getElementById("wizard-body");
+  if (!body) return;
+  body.innerHTML = '<p>Fill the stores with demo data to see a lived-in harness, or finish and start with an empty one.</p>' +
+    '<div class="actions"><button class="approve" id="wizard-demo-btn">Fill with demo data</button></div>' +
+    '<div class="form-error" id="wizard-demo-error"></div>';
+  document.getElementById("wizard-demo-btn").addEventListener("click", async function () {
+    var btn = this; btn.disabled = true;
+    try {
+      await api("/api/demo/seed", { method: "POST" });
+    } catch (e) {
+      document.getElementById("wizard-demo-error").textContent = e.message;
+      btn.disabled = false;
+      return;
+    }
+    loadState();
+  });
 }
 function renderAgents(state) {
   document.getElementById("agents").innerHTML = state.agents.map(function (a) {
@@ -518,12 +824,23 @@ function queueItemHtml(item) {
       '</div>'
     : '<div class="note">Decided: ' + esc(item.status) +
       (item.decided_at ? ' · ' + esc(item.decided_at) : '') + '</div>';
+  // A stub draft carries a persistent STUB badge in the head,
+  // visible without scrolling, and the full gathered context sits
+  // behind an expandable debug view: the card shows the short
+  // summary, not the wall of record dicts. The server marks stub
+  // drafts (item.stub); the page never string-matches the text.
+  var stubBadge = item.stub ? ' <span class="pill stub">STUB</span>' : "";
+  var stubContext = item.stub_context
+    ? '<details class="stub-context"><summary>Full context (debug)</summary>' +
+      '<div class="draft">' + esc(item.stub_context) + '</div></details>'
+    : "";
   return '<div class="queue-item' + (actionable ? "" : " decided") + '" data-item="' + esc(item.id) + '">' +
-    '<div class="head"><span><span class="agent-name">' + esc(item.agent) + '</span>' +
+    '<div class="head"><span><span class="agent-name">' + esc(item.agent) + '</span>' + stubBadge +
     ' <span class="account">' + esc(item.account || "") + '</span></span>' +
     '<span class="when">' + esc(item.created_at) + ' · ' + esc(item.status) + '</span></div>' +
     proofHtml(item) +
     '<div class="draft">' + esc(item.draft) + '</div>' +
+    stubContext +
     '<div class="edit-slot"></div>' +
     '<div class="sources-line">Sources: ' + esc(item.sources.join(", ") || "none") + '</div>' +
     linksLine + writesHtml(item) + actions + '</div>';
@@ -783,8 +1100,9 @@ document.getElementById("prompt-form").addEventListener("submit", async function
     // follows the link.
     var draft = res.item.draft || "";
     var summary = draft.length > 400 ? draft.slice(0, 400) + "…" : draft;
+    var stubPill = res.item.stub ? ' <span class="pill stub">STUB</span>' : "";
     resEl.innerHTML = "Routed to " + esc(res.display_name) + " for " +
-      esc(res.account) + " — draft queued." +
+      esc(res.account) + " — draft queued." + stubPill +
       '<div class="draft">' + esc(summary) + '</div>' +
       '<div class="actions"><button class="small" id="prompt-view-queue">View in Queue</button></div>';
     document.getElementById("prompt-view-queue").addEventListener("click", function () {
@@ -892,8 +1210,14 @@ function syncLlmForm() {
   document.getElementById("llm-base-label").style.display =
     provider === "custom" ? "" : "none";
 }
-function renderConnectors(state) {
-  var el = document.getElementById("connectors");
+function renderConnectors(state, targets) {
+  // The connector config, shared by the Settings tab and the
+  // wizard's step 2: the same fields, the same endpoint, rendered
+  // wherever the caller points it. Targets default to Settings.
+  var t = targets || {};
+  var el = t.el || document.getElementById("connectors");
+  var errEl = t.errEl || document.getElementById("connectors-error");
+  var statusEl = t.statusEl || document.getElementById("connectors-status");
   el.innerHTML = state.connectors.map(function (conn) {
     var fields = conn.fields.map(function (f) {
       return '<label>' + esc(f.label) +
@@ -910,8 +1234,6 @@ function renderConnectors(state) {
   el.querySelectorAll("[data-connector-form]").forEach(function (form) {
     form.addEventListener("submit", async function (ev) {
       ev.preventDefault();
-      var errEl = document.getElementById("connectors-error");
-      var statusEl = document.getElementById("connectors-status");
       errEl.textContent = "";
       statusEl.textContent = "";
       var values = {};

@@ -41,8 +41,10 @@ from .approvals import ApprovalQueue
 from .config import Config
 from .escalations import EscalationStore
 from .launcher import bundled_icon_path
+from .llm import STUB_CONTEXT_MARKER, StubLLM
 from .mcp_client import MCPClient, MCPServerStore
 from .memory import AccountMemory
+from .paths import cli_invocation
 from .prompt import run_prompt
 from .scheduler import (
     ScheduleStore,
@@ -54,6 +56,7 @@ from .scheduler import (
 from .setup import is_first_run, seed_demo
 from .summarizer import estimate_tokens
 from .sweep import SweepStore, run_sweep
+from .wizard import OllamaSetup
 
 _TEMPLATE_PATH = Path(__file__).with_name("dashboard.html")
 
@@ -256,14 +259,37 @@ def token_budget_state(queue: ApprovalQueue, config: Config) -> dict:
     }
 
 
+def _split_stub_draft(draft: str) -> tuple[str, str | None]:
+    """Split a stub draft into its summary body and the full gathered
+    context behind the debug marker. Non-stub drafts pass through
+    untouched: the marker is stub-only, so a real LLM draft that
+    happens to mention it is never split."""
+    if not draft.startswith(StubLLM.STUB_HEADER):
+        return draft, None
+    marker = "\n" + STUB_CONTEXT_MARKER + "\n"
+    idx = draft.find(marker)
+    if idx == -1:
+        return draft, None
+    return draft[:idx].rstrip(), draft[idx + len(marker):].strip()
+
+
 def _queue_item_dict(item) -> dict:
-    """One queue item, as the page renders it."""
+    """One queue item, as the page renders it.
+
+    A stub draft is marked by the server, not by the frontend
+    string-matching the draft text: `stub` is true when the draft
+    carries the stub header, and `stub_context` is the full gathered
+    context behind the debug marker, shown as an expandable view
+    while the card itself carries the short summary."""
+    summary, stub_context = _split_stub_draft(item.draft)
     return {
         "id": item.id,
         "agent": item.agent,
         "account": _extract_account(item.job),
         "job": item.job,
-        "draft": item.draft,
+        "draft": summary,
+        "stub": item.draft.startswith(StubLLM.STUB_HEADER),
+        "stub_context": stub_context,
         "sources": item.sources,
         "links": item.links or [],
         "proof": item.proof or [],
@@ -335,6 +361,11 @@ def build_state(
         "first_run": is_first_run(
             config, queue, memory, schedules, escalations
         ),
+        # The setup command the user actually has: `belay setup`
+        # in the packaged app, `python -m harness.run setup` from
+        # source. The first-run banner and the wizard show this,
+        # never a hardcoded command for the wrong mode.
+        "setup_command": cli_invocation() + " setup",
     }
 
 
@@ -503,14 +534,18 @@ def create_app(
     schedules: ScheduleStore | None = None,
     escalations: EscalationStore | None = None,
     mcp_servers: MCPServerStore | None = None,
+    wizard: OllamaSetup | None = None,
 ) -> FastAPI:
     """Build the dashboard app. Defaults read the live config and stores.
 
     Stores passed in are used as-is (tests inject temp-backed ones);
     the rest are built from the config paths and re-read from disk on
     every request, so changes made from the CLI show up without a
-    restart."""
+    restart. `wizard` is the Ollama setup for the first-run wizard;
+    tests inject one with a fake installer, the live app uses the
+    real commands."""
     cfg = config or Config.from_env()
+    wiz = wizard or OllamaSetup(cfg)
     app = FastAPI(title="Belay dashboard", version=__version__)
 
     def get_queue() -> ApprovalQueue:
@@ -609,6 +644,58 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return JSONResponse(result)
+
+    @app.get("/api/setup/ollama")
+    def ollama_status() -> JSONResponse:
+        # First-run wizard, step 1: is Ollama up, is the CLI there,
+        # is the model pulled, and what install can the wizard
+        # offer. Read-only: nothing installs or starts here, so the
+        # wizard can poll it freely.
+        return JSONResponse(wiz.status())
+
+    @app.post("/api/setup/ollama/install")
+    def ollama_install() -> JSONResponse:
+        # Start the Ollama install as a background job: a package
+        # download plus setup takes minutes, too long for an HTTP
+        # request. The job id comes back at once; the wizard polls
+        # the job endpoint. A second start while one runs returns
+        # the running job instead of a second install.
+        try:
+            job = wiz.start_install()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(job.to_dict())
+
+    @app.post("/api/setup/ollama/pull")
+    def ollama_pull(body: dict | None = None) -> JSONResponse:
+        # Pull the model as a background job: 4.9 GB for the
+        # default, too long for an HTTP request. Needs Ollama up
+        # first; the wizard offers it after a successful install.
+        model = ((body or {}).get("model") or "").strip() or None
+        try:
+            job = wiz.start_pull(model)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(job.to_dict())
+
+    @app.post("/api/setup/ollama/serve")
+    def ollama_serve() -> JSONResponse:
+        # Start `ollama serve` detached and return at once: the
+        # wizard polls the status endpoint until the server answers.
+        # For Ollama installed but not running, the CLI wizard's
+        # start-server branch, without the terminal.
+        try:
+            result = wiz.start_server()
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return JSONResponse(result)
+
+    @app.get("/api/setup/ollama/jobs/{job_id}")
+    def ollama_job(job_id: str) -> JSONResponse:
+        job = wiz.get_job(job_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail="Unknown job")
+        return JSONResponse(job.to_dict())
 
     @app.post("/api/prompt")
     def run_prompt_endpoint(body: dict) -> JSONResponse:

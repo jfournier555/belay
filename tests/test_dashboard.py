@@ -10,6 +10,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -20,9 +21,11 @@ from harness.dashboard import (
     create_app,
     event_log,
     queue_stats,
+    queue_view,
     source_statuses,
     token_budget_state,
 )
+from harness.llm import STUB_CONTEXT_MARKER, StubLLM
 
 
 def _sample_queue(path):
@@ -262,6 +265,91 @@ class TestBuildState(unittest.TestCase):
             state = build_state(queue, Config())
             for key in ("version", "stats", "sources", "agents", "queue", "events", "tokens", "stub_mode"):
                 self.assertIn(key, state)
+
+    def test_state_includes_setup_command(self):
+        # The first-run banner and the wizard show the command the
+        # user actually has, never a hardcoded one for the wrong
+        # mode: from source in tests, `belay setup` packaged.
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = _sample_queue(os.path.join(tmp, "approvals.json"))
+            state = build_state(queue, Config())
+            self.assertEqual(
+                state["setup_command"], "python -m harness.run setup"
+            )
+
+    def test_state_setup_command_is_packaged_when_frozen(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = _sample_queue(os.path.join(tmp, "approvals.json"))
+            with mock.patch(
+                "harness.dashboard.cli_invocation",
+                return_value="belay.exe",
+            ):
+                state = build_state(queue, Config())
+            self.assertEqual(state["setup_command"], "belay.exe setup")
+
+
+class TestStubDraftMarking(unittest.TestCase):
+    """The server marks stub drafts in the queue view (v0.18.1):
+    the card carries a STUB badge and the full context behind an
+    expandable view, while the card body is the short summary. The
+    frontend never string-matches the draft text."""
+
+    def _stub_draft(self):
+        context = (
+            "- salesforce_list_opportunities: account: Acme Corp; "
+            "opportunities: [{'name': 'Acme Corp - Renewal FY27', "
+            "'stage': 'Negotiation', 'amount': 120000}]; gaps: []\n"
+        )
+        return StubLLM().complete(
+            "Task: draft a renewal plan for Acme Corp\n\nContext:\n"
+            + context
+        )
+
+    def test_queue_item_marks_stub_draft(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = ApprovalQueue(os.path.join(tmp, "approvals.json"))
+            queue.submit(
+                agent="renewal-desk",
+                job={"account": "Acme Corp"},
+                draft=self._stub_draft(),
+                sources=["salesforce_list_opportunities"],
+            )
+            item = queue_view(queue)[0]
+            self.assertTrue(item["stub"])
+            # The card body is the summary: counts and headline
+            # facts, no raw dicts.
+            self.assertIn("1 record", item["draft"])
+            self.assertIn("Acme Corp - Renewal FY27", item["draft"])
+            self.assertNotIn("{'name'", item["draft"])
+            self.assertNotIn("'stage':", item["draft"])
+            # The full context is behind the debug marker, not in
+            # the body.
+            self.assertIsNotNone(item["stub_context"])
+            self.assertIn(
+                "{'name': 'Acme Corp - Renewal FY27'",
+                item["stub_context"],
+            )
+
+    def test_queue_item_leaves_real_draft_unmarked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = _sample_queue(os.path.join(tmp, "approvals.json"))
+            for item in queue_view(queue):
+                self.assertFalse(item["stub"])
+                self.assertIsNone(item["stub_context"])
+
+    def test_prompt_result_carries_stub_marking(self):
+        # Ask Belay queues through the same queue view, so the
+        # STUB badge follows the draft into the prompt card too.
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = ApprovalQueue(os.path.join(tmp, "approvals.json"))
+            queue.submit(
+                agent="renewal-desk",
+                job={"account": "Acme Corp"},
+                draft=self._stub_draft(),
+                sources=["salesforce_list_opportunities"],
+            )
+            state = build_state(queue, Config())
+            self.assertTrue(state["queue"][0]["stub"])
 
 
 if __name__ == "__main__":

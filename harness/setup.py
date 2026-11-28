@@ -701,14 +701,16 @@ def _start_ollama_server(popen_fn) -> None:
 
 
 def _wait_for_ollama(
-    probe_url: str, attempts: int = 5, sleep_fn=None
+    probe_url: str, attempts: int = 5, sleep_fn=None, reachable_fn=None
 ) -> bool:
     """Poll until the Ollama server answers, or the attempts run
     out. The server takes a few seconds to come up after a start
-    or an install."""
+    or an install. reachable_fn is injectable for the dashboard
+    wizard, which polls with a fake in tests."""
     sleep_fn = sleep_fn or time.sleep
+    reachable_fn = reachable_fn or ollama_reachable
     for _ in range(attempts):
-        if ollama_reachable(probe_url):
+        if reachable_fn(probe_url):
             return True
         sleep_fn(1.0)
     return False

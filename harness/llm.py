@@ -50,6 +50,19 @@ from .config import (
     Config,
 )
 
+# Marker separating a stub draft's summary from the full gathered
+# context. The dashboard splits the draft here: the summary stays in
+# the card, the context goes behind an expandable debug view. A real
+# LLM draft never contains it.
+STUB_CONTEXT_MARKER = "--- Full context (debug) ---"
+
+# A stub summary line is one tool per line, truncated: long enough to
+# name what was gathered and its key facts, short enough to read.
+_STUB_LINE_LIMIT = 220
+# One scalar fact inside a summary line is cut here, so a long
+# subject or excerpt cannot push the line past its limit on its own.
+_STUB_FACT_LIMIT = 80
+
 # Ollama ignores the key on its OpenAI-compatible endpoint; any
 # non-empty value works. "ollama" says what it is.
 OLLAMA_DUMMY_KEY = "ollama"
@@ -109,6 +122,201 @@ class LLMClient(Protocol):
         ...
 
 
+def _truncate(text: str, limit: int) -> str:
+    """Cut `text` to `limit` chars at a word boundary, with an
+    ellipsis when anything was cut. Short text passes through."""
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit].rsplit(" ", 1)[0] or text[:limit]
+    return cut + "…"
+
+
+def _split_depth_zero(text: str, sep: str) -> list[str]:
+    """Split `text` on `sep` where the separator sits at bracket
+    depth 0 and outside quotes. A separator inside a dict, a list,
+    or a quoted string (a Slack excerpt, a subject line) does not
+    split: the rendered tool results nest those everywhere."""
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    quote: str | None = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            buf.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                buf.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            buf.append(ch)
+        elif ch in "[{(":
+            depth += 1
+            buf.append(ch)
+        elif ch in "]})":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif depth == 0 and text.startswith(sep, i):
+            parts.append("".join(buf))
+            buf = []
+            i += len(sep)
+            continue
+        else:
+            buf.append(ch)
+        i += 1
+    parts.append("".join(buf))
+    return [part.strip() for part in parts if part.strip()]
+
+
+def _unquote(raw: str) -> str:
+    """A repr'd scalar as plain text: a quoted string unquotes, a
+    number or bare word passes through."""
+    import ast
+
+    raw = raw.strip()
+    if len(raw) >= 2 and raw[0] in ("'", '"'):
+        try:
+            value = ast.literal_eval(raw)
+        except (ValueError, SyntaxError):
+            return raw
+        return str(value) if not isinstance(value, str) else value
+    return raw
+
+
+def _dict_scalars(text: str, limit: int = 2) -> list[tuple[str, str]]:
+    """The first `limit` scalar key: value pairs from a dict literal,
+    headline fields first. A case reads as (subject, status), an
+    opportunity as (name, stage), not as whichever fields happen
+    to come first in the record. Nested values are skipped, never
+    rendered: the point is the headline facts, not the record. An
+    unparseable dict yields nothing instead of raising."""
+    import ast
+
+    # Headline order: what a human scans for first in a record.
+    _HEADLINE = (
+        "name",
+        "subject",
+        "title",
+        "excerpt",
+        "author",
+        "channel",
+        "stage",
+        "status",
+        "priority",
+        "amount",
+        "id",
+    )
+    inner = text.strip()
+    if inner.startswith("{") and inner.endswith("}"):
+        inner = inner[1:-1]
+    found: list[tuple[str, str]] = []
+    for part in _split_depth_zero(inner, ", "):
+        if ": " not in part:
+            continue
+        key_raw, value_raw = part.split(": ", 1)
+        value_raw = value_raw.strip()
+        if value_raw.startswith(("[", "{")):
+            continue
+        try:
+            key = ast.literal_eval(key_raw.strip())
+            value = ast.literal_eval(value_raw)
+        except (ValueError, SyntaxError):
+            continue
+        if isinstance(value, (dict, list)):
+            continue
+        found.append((str(key), str(value)))
+
+    def _rank(pair: tuple[str, str]) -> int:
+        try:
+            return _HEADLINE.index(pair[0])
+        except ValueError:
+            return len(_HEADLINE)
+
+    found.sort(key=_rank)
+    return found[:limit]
+
+
+def _summarize_tool_value(value: str) -> str:
+    """One-line summary of one tool's rendered result: scalar facts
+    kept, record lists replaced by a count plus the first record's
+    headline fields, no raw dicts. A list of records reads as
+    `opportunities: 2 records (name: 'Acme Corp - Renewal FY27',
+    stage: 'Negotiation')`, not as the records themselves."""
+    kept: list[str] = []
+    for segment in _split_depth_zero(value, "; "):
+        if ": " not in segment:
+            kept.append(_truncate(segment, _STUB_FACT_LIMIT))
+            continue
+        key, rest = segment.split(": ", 1)
+        key = key.strip()
+        rest = rest.strip()
+        if not rest or rest in ("[]", "{}", "None"):
+            kept.append("%s: none" % key)
+            continue
+        if rest.startswith("["):
+            inner = rest[1:-1].strip() if rest.endswith("]") else rest[1:]
+            items = _split_depth_zero(inner, ", ") if inner else []
+            if not items:
+                kept.append("%s: none" % key)
+                continue
+            head = ""
+            first = items[0].strip()
+            if first.startswith("{"):
+                scalars = _dict_scalars(first)
+                if scalars:
+                    head = " (" + ", ".join(
+                        "%s: %s" % (name, _truncate(val, 40))
+                        for name, val in scalars
+                    ) + ")"
+            kept.append(
+                "%s: %d record%s%s"
+                % (key, len(items), "" if len(items) == 1 else "s", head)
+            )
+        elif rest.startswith("{"):
+            scalars = _dict_scalars(rest)
+            if scalars:
+                kept.append(
+                    "%s: %s"
+                    % (
+                        key,
+                        ", ".join(
+                            "%s: %s" % (name, _truncate(val, 40))
+                            for name, val in scalars
+                        ),
+                    )
+                )
+            else:
+                kept.append("%s: set" % key)
+        else:
+            kept.append(
+                "%s: %s" % (key, _truncate(_unquote(rest), _STUB_FACT_LIMIT))
+            )
+    return "; ".join(kept)
+
+
+def _summarize_context(context: str) -> list[str]:
+    """The gathered context as one summary line per tool. Lines that
+    are not a tool result (a continuation of a multi-line value)
+    are skipped: the summary covers the tool, and the full context
+    is preserved behind the debug marker."""
+    lines = []
+    for line in context.splitlines():
+        line = line.strip()
+        if not line.startswith("- ") or ": " not in line[2:]:
+            continue
+        tool, value = line[2:].split(": ", 1)
+        summary = _summarize_tool_value(value.strip())
+        lines.append(
+            "- %s: %s" % (tool.strip(), _truncate(summary, _STUB_LINE_LIMIT))
+        )
+    return lines
+
+
 class StubLLM:
     """Deterministic stand-in for a real LLM.
 
@@ -130,8 +338,12 @@ class StubLLM:
     def complete(
         self, prompt: str, system: str | None = None, model: str | None = None
     ) -> str:
-        # Pull the task and the context block out of the prompt so the stub
-        # draft shows what the agent was asked to do and what it gathered.
+        # Pull the task and the context block out of the prompt. The
+        # draft body is a compact summary, one line per tool: the
+        # full gathered context used to be the body, and a human
+        # reads that wall of record dicts as word salad. The full
+        # context is still in the draft, behind the debug marker,
+        # where the dashboard shows it as an expandable view.
         task = _extract_between(prompt, "Task:", "Context:")
         context = _extract_after(prompt, "Context:")
         lines = [self.STUB_HEADER, ""]
@@ -139,13 +351,17 @@ class StubLLM:
             lines.append("Task: " + task.strip())
             lines.append("")
         if context:
-            lines.append("Context gathered from the tools:")
-            lines.append(context.strip())
+            lines.append("Gathered from the tools:")
+            lines.extend(_summarize_context(context))
             lines.append("")
         lines.append(
-            "A real LLM would turn the context above into prose here. "
+            "A real LLM would turn the summary above into prose here. "
             "Start Ollama (or wire up an API key) to replace this stub."
         )
+        if context:
+            lines.append("")
+            lines.append(STUB_CONTEXT_MARKER)
+            lines.append(context.strip())
         return "\n".join(lines)
 
 
