@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v0.17.0**, 15 agents, 9 connectors, 670 tests green.
+**A post sales AI harness.** Current version: **v0.17.0**, 15 agents, 10 connectors, 703 tests green.
 
 ![Belay: AI that does the post-sales busywork. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -61,7 +61,7 @@ Then run the first-run wizard. It asks one question with two answers:
 ```
 
 1. **Fill with Demo data?** Seeds the stores with 4 demo drafts (one approved, one edited, two pending), 2 memory records, a daily schedule, and 3 open escalations, so the dashboard shows a lived-in harness instead of empty views. The drafts are generated through Ollama when it is reachable (real responses); otherwise they are stub-labeled and the output says so plainly. Refuses to seed over real data without explicit confirmation; clear it anytime with `python -m harness.run setup --clear-demo`.
-2. **Run Setup Wizard?** Walks the LLM provider choice plus the nine connectors (Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, Google Calendar), writes them to `.env` preserving existing entries, and verifies each one live where a check exists. Secrets are never printed.
+2. **Run Setup Wizard?** Walks the LLM provider choice plus the ten connectors (Salesforce, Slack, Gong, HubSpot, Gmail, Zoom, Zendesk, Linear, Google Calendar, CSV), writes them to `.env` preserving existing entries, and verifies each one live where a check exists. Secrets are never printed.
 
 ### The LLM: Ollama is the default
 
@@ -106,7 +106,7 @@ Job (free text or --agent + --account)
      value-finder in v0.9.0, salesforce-updater in v1.3.0, risk-watcher
      in v1.6.0, escalation-manager in v1.7.0, competitive-defense in
      v1.8.0, stakeholder-mapper in v1.9.0, case-triage in v1.10.0)
-  -> Tools (9 connectors, summary-first results)
+  -> Tools (10 connectors, summary-first results)
   -> Draft
   -> Proof checklist (the agent self-checks "done" before queueing)
   -> Approval queue (a human approves, rejects, or edits)
@@ -526,6 +526,7 @@ agent candidates below.
 | Zendesk | v0.8.6 | `zendesk_list_tickets`, `zendesk_search_tickets`, `zendesk_get_ticket` |
 | Linear | v0.8.7 | `linear_list_issues`, `linear_search_issues`, `linear_get_issue` |
 | Google Calendar | v1.16.0, read-only | `gcal_list_events`, `gcal_get_event` |
+| CSV accounts | v0.18.1, read-only, local file | `csv_list_accounts`, `csv_get_account`, `csv_list_opportunities`, `csv_list_cases` |
 
 Each connector exposes its tools two ways, from one implementation
 (`tools.py`): in-process, through the harness tool registry (the v0.2 path),
@@ -542,6 +543,7 @@ python -m connectors.zoom.server
 python -m connectors.zendesk.server
 python -m connectors.linear.server
 python -m connectors.gcal.server
+python -m connectors.csv.server
 ```
 
 The MCP servers are also callable from the harness via an MCP client

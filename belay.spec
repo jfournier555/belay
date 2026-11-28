@@ -32,6 +32,7 @@ a = Analysis(
     datas=[
         ("harness/dashboard.html", "harness"),
         ("harness/assets/belay-icon.png", "harness/assets"),
+        ("connectors/csv/sample_accounts.csv", "connectors/csv"),
     ],
     hiddenimports=[],
     hookspath=[],

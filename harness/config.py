@@ -100,6 +100,16 @@ Environment variables:
                              without it (and without --hourly-rate on the
                              run) time saved is reported in hours only,
                              not dollars.
+    HARNESS_CSV_ACCOUNTS_FILE
+                             Path to a CSV file of account records (a
+                             local connector, v0.18.1). When set, and
+                             neither Salesforce nor HubSpot is
+                             configured, the CSV file is the CRM: the
+                             agents gather account records from the
+                             file instead of a live system, so the
+                             harness runs without live customer
+                             accounts. A missing file is a named gap,
+                             not an error. See connectors/csv/README.md.
     BELAY_DATA_DIR           Override for the packaged app's user data
                              directory (v1.14.0): the state files and
                              .env live there instead of the working
@@ -182,6 +192,7 @@ class Config:
     escalations_file: str = "escalations.json"
     token_budget_per_job: int = 8000
     loaded_hourly_rate: float | None = None
+    csv_accounts_file: str | None = None
     env_path: str = ".env"
 
     @classmethod
@@ -263,6 +274,8 @@ class Config:
             loaded_hourly_rate=_parse_rate(
                 os.environ.get("HARNESS_LOADED_HOURLY_RATE")
             ),
+            csv_accounts_file=os.environ.get("HARNESS_CSV_ACCOUNTS_FILE")
+            or None,
             env_path=default_env_path(),
         )
 
@@ -340,3 +353,11 @@ class Config:
             and self.gcal_refresh_token
             and not self.stub_mode
         )
+
+    def csv_configured(self) -> bool:
+        """True when a CSV accounts file path is set and stub mode is
+        off. The file itself need not exist yet: a missing file is a
+        named gap at read time, not a configuration error, so the
+        CRM can still be the CSV file and the gap surfaces to the
+        agents instead of silently falling back to stub data."""
+        return bool(self.csv_accounts_file and not self.stub_mode)

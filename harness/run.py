@@ -67,6 +67,7 @@ import sys
 import threading
 from dataclasses import replace
 
+from connectors.csv.tools import csv_crm_tools, csv_tools
 from connectors.gcal.tools import gcal_tools
 from connectors.gmail.tools import gmail_tools
 from connectors.gong.tools import gong_tools
@@ -120,13 +121,16 @@ from harness.writeback import (
 
 def build_registry(config: Config) -> ToolRegistry:
     """Register the connector tools (Salesforce + Slack + Gong + HubSpot
-    + Gmail + Zoom + Zendesk + Linear + Google Calendar), then the external
-    MCP servers the user has configured (v1.5.0).
+    + Gmail + Zoom + Zendesk + Linear + Google Calendar + CSV), then the
+    external MCP servers the user has configured (v1.5.0).
 
     The CRM the agents gather from is Salesforce unless HubSpot is
-    configured and Salesforce is not; then it is HubSpot. When both are
-    configured, Salesforce wins. A registry built without a config
-    defaults to Salesforce.
+    configured and Salesforce is not; then it is HubSpot. When neither
+    is configured and a CSV accounts file is, the CSV file is the CRM
+    (v0.18.1): the agents' account-record calls are served from the
+    file, so the harness runs without live customer accounts. When
+    both are configured, Salesforce wins. A registry built without a
+    config defaults to Salesforce.
 
     External servers load from the server store file
     (HARNESS_MCP_SERVERS_FILE, default mcp-servers.json). A missing
@@ -134,11 +138,16 @@ def build_registry(config: Config) -> ToolRegistry:
     nothing. A configured server that fails to connect is reported on
     stderr and skipped; it never breaks the registry build.
     """
-    crm = (
-        "hubspot"
-        if config.hubspot_configured() and not config.salesforce_configured()
-        else "salesforce"
-    )
+    if config.hubspot_configured() and not config.salesforce_configured():
+        crm = "hubspot"
+    elif (
+        config.csv_configured()
+        and not config.salesforce_configured()
+        and not config.hubspot_configured()
+    ):
+        crm = "csv"
+    else:
+        crm = "salesforce"
     registry = ToolRegistry(crm=crm)
     for tool in salesforce_tools(config):
         registry.register(tool)
@@ -158,6 +167,17 @@ def build_registry(config: Config) -> ToolRegistry:
         registry.register(tool)
     for tool in gcal_tools(config):
         registry.register(tool)
+    for tool in csv_tools(config):
+        registry.register(tool)
+    if crm == "csv":
+        # The CSV file is the CRM: the account-record tools agents
+        # call (salesforce_get_account and friends) are served from
+        # the file, so every agent gathers real file data with no
+        # agent changes. Re-registering replaces the Salesforce
+        # handlers; the results carry source=csv, so the provenance
+        # is explicit in every result.
+        for tool in csv_crm_tools(config):
+            registry.register(tool)
     try:
         store = MCPServerStore(config.mcp_servers_file)
         report = load_external_tools(registry, store)
@@ -178,7 +198,7 @@ def cmd_setup(args: argparse.Namespace) -> int:
 
     --demo fills the stores with demo data (refuses over real
     data unless --yes). --wizard walks the LLM provider choice and
-    the nine connectors, writing .env. --clear-demo removes only the seeded
+    the ten connectors, writing .env. --clear-demo removes only the seeded
     records. With no flag and an interactive terminal, it asks the
     one question with two answers; without a terminal it says so
     and exits 2."""

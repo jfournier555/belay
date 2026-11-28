@@ -8,10 +8,14 @@ one question with two answers:
 
 Demo data seeds the file-backed stores (approvals, memory, schedules,
 escalations) with stub content, so the dashboard shows a lived-in
-harness instead of empty views. The demo drafts use the default LLM
+harness instead of empty views. The demo also installs the sample
+accounts CSV (connectors/csv/sample_accounts.csv, ten fictional
+accounts) next to the stores, and the demo agents gather account
+records from it, so the demo proves the machine runs end to end on
+file data without live accounts. The demo drafts use the default LLM
 chain: Ollama when it is reachable (real responses), the stub when
 it is not, labeled as stub in the output and in the drafts. Setup
-walks the LLM provider choice plus the nine connectors, writes them
+walks the LLM provider choice plus the ten connectors, writes them
 to .env, and verifies each one where a live check exists. When
 Ollama is missing, the wizard offers to install it (official
 distribution only), explicit yes, showing the exact command first.
@@ -1243,6 +1247,31 @@ def _real_records(config: Config, marker: dict) -> dict:
     return {key: count for key, count in real.items() if count}
 
 
+def _install_sample_csv(config: Config) -> str | None:
+    """Install the sample accounts CSV next to the stores, for the
+    demo and for first use. Copies connectors/csv/sample_accounts.csv
+    to sample_accounts.csv beside the approvals file, only when it is
+    not already there, so a user's own file is never clobbered.
+    Returns the installed path, or None when the sample is not
+    shipped with this install (the packaged app without the data
+    file): the demo then runs as before, on stub data."""
+    from connectors.csv.tools import SAMPLE_CSV_PATH
+
+    dest = os.path.join(
+        os.path.dirname(os.path.abspath(config.approvals_file)),
+        "sample_accounts.csv",
+    )
+    if os.path.exists(dest):
+        return dest
+    if not os.path.exists(SAMPLE_CSV_PATH):
+        return None
+    try:
+        shutil.copyfile(SAMPLE_CSV_PATH, dest)
+    except OSError:
+        return None
+    return dest
+
+
 def seed_demo(
     config: Config,
     confirm: bool | None = None,
@@ -1319,6 +1348,14 @@ def seed_demo(
             "responses." % cli_invocation()
         )
     demo_config = _demo_config(config)
+    sample_csv = _install_sample_csv(config)
+    if sample_csv is not None:
+        # The demo agents gather account records from the sample
+        # file, not the stub: the demo proves the machine runs end
+        # to end on file data. A real CSV the user configured is
+        # never used here; the demo always uses the sample, so it
+        # cannot touch real accounts.
+        demo_config = replace(demo_config, csv_accounts_file=sample_csv)
 
     def run_agent(agent: str):
         item, _draft, _agent, _route = execute_job(
@@ -1408,7 +1445,24 @@ def seed_demo(
             else "stub-labeled (Ollama not reachable)",
         )
     )
-    return {"status": "seeded", "counts": counts, "real_drafts": real_drafts}
+    if sample_csv is not None:
+        out(
+            "Sample accounts installed: %s (10 fictional accounts, "
+            "gathered by the demo drafts). Keep using them with "
+            "HARNESS_CSV_ACCOUNTS_FILE=%s, or point it at your own CSV."
+            % (sample_csv, sample_csv)
+        )
+    else:
+        out(
+            "Sample accounts not installed: the sample CSV is not "
+            "shipped with this install. The demo drafts used stub data."
+        )
+    return {
+        "status": "seeded",
+        "counts": counts,
+        "real_drafts": real_drafts,
+        "sample_csv": sample_csv,
+    }
 
 
 def _marker_counts(marker: dict) -> dict:

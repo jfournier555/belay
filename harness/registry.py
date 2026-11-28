@@ -62,10 +62,12 @@ class Tool:
 class ToolRegistry:
     """Holds the tools agents may call, by name.
 
-    `crm` is which CRM the agents gather from: "salesforce" (default) or
-    "hubspot". It is set by build_registry() from the config: HubSpot when
-    it is configured and Salesforce is not. A registry built directly (as
-    in the tests) defaults to Salesforce, so the demo is unchanged.
+    `crm` is which CRM the agents gather from: "salesforce" (default),
+    "hubspot", or "csv". It is set by build_registry() from the config:
+    HubSpot when it is configured and Salesforce is not; CSV when a CSV
+    accounts file is configured and neither Salesforce nor HubSpot is.
+    A registry built directly (as in the tests) defaults to Salesforce,
+    so the demo is unchanged.
     """
 
     def __init__(self, crm: str = "salesforce") -> None:
