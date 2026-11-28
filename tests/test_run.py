@@ -65,11 +65,11 @@ class TestCli(unittest.TestCase):
         thread.join.assert_called_once()
         self.assertIn("Belay dashboard", out)
 
-    def test_agents_lists_sixteen_implemented(self):
+    def test_agents_lists_seventeen_implemented(self):
         code, out = self._run(["agents"])
         self.assertEqual(code, 0)
         lines = [line for line in out.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 16)
+        self.assertEqual(len(lines), 17)
         self.assertTrue(all("implemented" in line for line in lines))
 
     def test_tools_lists_all_connector_tools_in_stub(self):

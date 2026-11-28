@@ -1,12 +1,12 @@
-"""The specialist agents: the sixteen post-sales jobs the harness covers.
+"""The specialist agents: the seventeen post-sales jobs the harness covers.
 
-The sixteen jobs are the post-sales jobs that matter: scout, briefer,
+The seventeen jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
 risk-watcher, escalation-manager, competitive-defense,
-stakeholder-mapper, case-triage, and champion-change.
+stakeholder-mapper, case-triage, champion-change, and handoff.
 
-V1 implements sixteen end to end:
+V1 implements seventeen end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -95,8 +95,18 @@ V1 implements sixteen end to end:
   (a title is claimed only with a source link), and the rebuild plan
   from the Champion Departure playbook's 7/14/30 spine. With no
   champion on record the draft names the gap, never a departure.
+- handoff: handles a sales-to-CS transition or an inherited account.
+  Gathers the account record, health signals, open cases and
+  escalations, pending drafts, renewal date and stage, open
+  opportunities, recent memory, and the champion and stakeholder
+  picture, then drafts the handoff brief: the account's current
+  state, open items ranked by urgency, risks flagged with evidence,
+  what is already in flight, and the first-week actions for the new
+  CSM. A missing previous owner or missing history is a named gap,
+  never an error. With no prior history the draft is an empty-state
+  brief, stated as such.
 
-All sixteen are implemented. Every job in the harness has a working agent.
+All seventeen are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -4626,6 +4636,639 @@ class ChampionChangeAgent(Agent):
         )
 
 
+# The agents handoff composes from (v0.18.0): briefer first (its
+# snapshot is the account state), renewal-desk (the renewal picture),
+# risk-watcher (the flagged risks), stakeholder-mapper (the
+# relationship map), champion-change (the champion picture).
+_HANDOFF_SOURCE_AGENTS = (
+    "briefer",
+    "renewal-desk",
+    "risk-watcher",
+    "stakeholder-mapper",
+    "champion-change",
+)
+
+
+def _extract_previous_owner(
+    job: dict, composed_text: str, memory_text: str
+) -> tuple[str | None, str | None]:
+    """The previous owner this handoff is from, and where the name came
+    from.
+
+    The job names one first (job["previous_owner"], job["from_owner"],
+    or job["previous_csm"]). Otherwise a prior draft or a memory record
+    names one in colon form ("previous owner: X", "former owner: X",
+    "previous csm: X", "handed off by: X"). Only the colon form is
+    parsed from prose, so a sentence like "the previous owner was
+    great" never yields a name. Returns (name, source) or (None,
+    None): no previous owner on record is a gap, not an error.
+    """
+    for key in ("previous_owner", "from_owner", "previous_csm"):
+        name = str(job.get(key, "") or "").strip()
+        if name:
+            return name, "job"
+    text = str(job.get("text", "") or "")
+    for label in (
+        "previous owner",
+        "former owner",
+        "previous csm",
+        "handed off by",
+    ):
+        first = "[%s%s]" % (label[0].upper(), label[0].lower())
+        pattern = re.compile(
+            first
+            + re.escape(label[1:])
+            + r"\s*:\s*([A-Z][A-Za-z'’.-]+(?: [A-Z][A-Za-z'’.-]+){0,2})"
+        )
+        for source_text, source in (
+            (text, "job"),
+            (composed_text, "prior draft"),
+            (memory_text, "memory"),
+        ):
+            match = pattern.search(source_text)
+            if match:
+                return match.group(1).strip(), source
+    return None, None
+
+
+def _pending_items(job: dict, account: str) -> list:
+    """Drafts still pending in the approval queue for this account.
+    Empty when the job names no approvals file or the queue cannot be
+    read: a missing queue reads as nothing in flight, not an error."""
+    path = job.get("approvals_file")
+    if not path:
+        return []
+    try:
+        queue = ApprovalQueue(path)
+    except Exception:
+        return []
+    return [
+        item
+        for item in queue.list_pending()
+        if _extract_account(item.job) == account
+    ]
+
+
+def _open_escalations(job: dict, account: str) -> list:
+    """Open or escalated escalation records for this account. Empty
+    when the job names no escalations file or the store cannot be
+    read: a missing store reads as no open escalations, not an error."""
+    path = job.get("escalations_file")
+    try:
+        store = EscalationStore(path) if path else EscalationStore(None)
+        records = store.for_account(account)
+    except Exception:
+        return []
+    return [r for r in records if r.status in ("open", "escalated")]
+
+
+def _account_schedules(job: dict, account: str) -> list:
+    """Scheduled jobs for this account. Empty when the job names no
+    schedules file or the store cannot be read: a missing store reads
+    as nothing scheduled, not an error."""
+    path = job.get("schedules_file")
+    if not path:
+        return []
+    try:
+        from .scheduler import ScheduleStore
+
+        store = ScheduleStore(path)
+        return [
+            schedule
+            for schedule in store.list()
+            if schedule.account == account
+        ]
+    except Exception:
+        return []
+
+
+def _handoff_open_items(
+    signals: list[dict], escalations: list, pending: list
+) -> list[dict]:
+    """The open items for the handoff, ranked by urgency.
+
+    Risk signals first (their harness-computed severity), then open
+    escalations (escalated is high, open is medium), then drafts still
+    pending a decision in the queue (low: they need a human, they are
+    not account risk). Sorted by severity, then by label so the order
+    is deterministic. A signal and an escalation about the same
+    subject stay separate items: one is the risk, the other is the
+    escalation already raised about it.
+    """
+    items: list[dict] = []
+    for signal in signals:
+        items.append(
+            {
+                "urgency": signal.get("severity", "low"),
+                "label": signal.get("text", ""),
+                "source": "risk signals",
+            }
+        )
+    for record in escalations:
+        items.append(
+            {
+                "urgency": "high" if record.status == "escalated" else "medium",
+                "label": "Escalation %s (%s): %s"
+                % (record.id, record.signal_key, record.summary),
+                "source": "escalation store",
+            }
+        )
+    for item in pending:
+        items.append(
+            {
+                "urgency": "low",
+                "label": "%s draft awaiting approval (submitted %s)"
+                % (item.agent, item.created_at),
+                "source": "approval queue",
+            }
+        )
+    items.sort(
+        key=lambda i: (_SEVERITY_RANK.get(i["urgency"], 2), i["label"])
+    )
+    return items
+
+
+def _handoff_first_week(
+    account_record: dict,
+    renewal_days: int | None,
+    open_items: list[dict],
+    escalations: list,
+    pending: list,
+    champion: dict | None,
+    champion_source: str | None,
+    previous_owner: str | None,
+    had_history: bool,
+) -> list[str]:
+    """The first-week actions for the new CSM, harness-written from
+    the computed state. Each action names its source. A missing
+    previous owner or missing history produces an action to gather
+    it, not a blank week."""
+    actions: list[str] = []
+    renewal = str(account_record.get("renewal_date", "") or "")
+    if renewal_days is not None and renewal_days <= 30:
+        actions.append(
+            "Confirm the renewal is still alive, who owns the close, "
+            "and the real close date (source: renewal opportunity, "
+            "closes %s)." % renewal
+        )
+    high = [i for i in open_items if i["urgency"] == "high"]
+    if high:
+        actions.append(
+            "Own the %d high-urgency open item(s) first: %s "
+            "(source: %s)."
+            % (
+                len(high),
+                high[0]["label"],
+                high[0]["source"],
+            )
+        )
+    if escalations:
+        actions.append(
+            "Read the %d open escalation(s) and confirm the owner "
+            "and next step for each (source: escalation store)."
+            % len(escalations)
+        )
+    if pending:
+        actions.append(
+            "Decide the %d draft(s) awaiting approval in the queue "
+            "(source: approval queue)." % len(pending)
+        )
+    if champion is not None:
+        actions.append(
+            "Meet %s in week one and confirm they still back the "
+            "renewal (source: %s)."
+            % (champion["name"], champion_source or "unknown")
+        )
+    else:
+        actions.append(
+            "Find the champion: no champion is on record for this "
+            "account (source: account record and prior drafts)."
+        )
+    if previous_owner is None or not had_history:
+        actions.append(
+            "Introduce yourself to the account: no previous owner or "
+            "history is on record, so gather the context the records "
+            "do not hold (source: none on file)."
+        )
+    owner = str(account_record.get("owner", "") or "").strip()
+    if owner:
+        actions.append(
+            "Book the intro call with the account owner %s "
+            "(source: account record)." % owner
+        )
+    return actions
+
+
+def _handoff_block(
+    account: str,
+    account_record: dict,
+    renewal_days: int | None,
+    signals: list[dict],
+    open_items: list[dict],
+    champion: dict | None,
+    champion_source: str | None,
+    people: list[dict],
+    pending: list,
+    escalations: list,
+    schedules: list,
+    previous_owner: str | None,
+    previous_owner_source: str | None,
+    actions: list[str],
+    gaps: list[str],
+) -> str:
+    """The harness-written handoff brief appended to the draft: the
+    account's current state, open items ranked by urgency, risks
+    flagged with evidence, the champion and stakeholder picture, what
+    is already in flight, and the first-week actions. Nothing is
+    invented: every claim carries a source, and a missing item is
+    named as a gap."""
+    lines = ["Handoff brief (harness-computed):", ""]
+    lines.append("Account state:")
+    health = str(account_record.get("health", "") or "").strip()
+    arr = account_record.get("arr")
+    owner = str(account_record.get("owner", "") or "").strip()
+    renewal = str(account_record.get("renewal_date", "") or "").strip()
+    state_parts = []
+    if health:
+        state_parts.append("health %s" % health)
+    if arr is not None:
+        state_parts.append("ARR %s" % arr)
+    if owner:
+        state_parts.append("owner %s" % owner)
+    if renewal:
+        if renewal_days is not None:
+            state_parts.append(
+                "renewal %s (%d days)" % (renewal, renewal_days)
+            )
+        else:
+            state_parts.append("renewal %s" % renewal)
+    if state_parts:
+        lines.append(
+            "- %s: %s (source: account record)."
+            % (account, ", ".join(state_parts))
+        )
+    else:
+        lines.append(
+            "- %s: no account record on file (source: none)."
+            % account
+        )
+    lines.append("")
+    lines.append("Open items (ranked by urgency):")
+    if not open_items:
+        lines.append("- No open items in the gathered records.")
+    for item in open_items:
+        lines.append(
+            "- [%s] %s (source: %s)."
+            % (item["urgency"], item["label"], item["source"])
+        )
+    lines.append("")
+    lines.append("Risks:")
+    flagged = [s for s in signals if s.get("severity") in ("high", "medium")]
+    if not flagged:
+        lines.append("- No high or medium risk signals in this run.")
+    for signal in flagged:
+        lines.append(
+            "- [%s] %s" % (signal.get("severity"), signal.get("text"))
+        )
+    lines.append("")
+    lines.append("Champion and stakeholders:")
+    if champion is None:
+        lines.append(
+            "- Champion: none on record for %s. The new CSM starts "
+            "by finding one." % account
+        )
+    else:
+        lines.append(
+            "- Champion: %s (source: %s)."
+            % (champion["name"], champion_source or "unknown")
+        )
+    customers = [p for p in people if p.get("side") == "customer"]
+    if customers:
+        lines.append(
+            "- Stakeholders on record: %s."
+            % ", ".join(p["name"] for p in customers)
+        )
+    else:
+        lines.append("- No stakeholders on record in the gathered data.")
+    lines.append("")
+    lines.append("Already in flight:")
+    if pending:
+        lines.append("- Pending drafts in the approval queue:")
+        for item in pending:
+            lines.append(
+                "  - %s draft, submitted %s (source: approval queue)."
+                % (item.agent, item.created_at)
+            )
+    else:
+        lines.append("- No drafts pending in the approval queue.")
+    if schedules:
+        lines.append("- Scheduled jobs for this account:")
+        for schedule in schedules:
+            lines.append("  - %s (source: schedule store)." % schedule.describe())
+    else:
+        lines.append("- No scheduled jobs for this account.")
+    if escalations:
+        lines.append("- Open escalations:")
+        for record in escalations:
+            lines.append(
+                "  - %s (%s, %s) (source: escalation store)."
+                % (record.id, record.signal_key, record.status)
+            )
+    else:
+        lines.append("- No open escalations.")
+    lines.append("")
+    lines.append("Previous owner:")
+    if previous_owner is None:
+        lines.append(
+            "- No previous owner named in the job, in any prior draft, "
+            "or in memory."
+        )
+    else:
+        lines.append(
+            "- %s (source: %s)."
+            % (previous_owner, previous_owner_source or "unknown")
+        )
+    lines.append("")
+    lines.append("First week:")
+    for index, action in enumerate(actions, start=1):
+        lines.append("%d. %s" % (index, action))
+    if gaps:
+        lines.append("")
+        lines.append("Gaps:")
+        for gap in gaps:
+            lines.append("- %s" % gap)
+    return "\n".join(lines)
+
+
+class HandoffAgent(Agent):
+    """Handles a sales-to-CS transition or an inherited account.
+
+    Gathers: account record, open opportunities, open cases, recent
+    email threads, Gong and Zoom transcripts, Zendesk tickets, Linear
+    issues, and recent Slack signals. Drafts: the handoff brief — the
+    account's current state, open items ranked by urgency, risks
+    flagged with evidence, the champion and stakeholder picture, what
+    is already in flight, and the first-week actions for the new CSM.
+
+    Composition (v1.1.0): when prior drafts from briefer,
+    renewal-desk, risk-watcher, stakeholder-mapper, and
+    champion-change exist for the account, the brief is built from
+    those drafts instead of re-gathering the same context; only the
+    fresh account record, opportunities, cases, and tickets are
+    gathered directly. When no prior drafts exist, the agent gathers
+    directly.
+
+    Open items, risks, and first-week actions are harness-computed,
+    never model prose: urgency comes from the risk signals, the
+    escalation store, and the approval queue, and every claim carries
+    its source. A missing previous owner or missing history is a
+    named gap, never an error, and an inherited account with no prior
+    history gets an empty-state brief, stated as such.
+    """
+
+    name = "handoff"
+    display_name = "Handoff"
+    description = (
+        "Drafts the handoff brief for an inherited account: current "
+        "state, open items ranked by urgency, risks, what is already "
+        "in flight, and the first-week actions for the new CSM."
+    )
+    keywords = [
+        "handoff",
+        "hand off",
+        "handover",
+        "inherited account",
+        "inherit",
+        "take over the account",
+        "taking over",
+        "new csm",
+        "sales to cs",
+        "transition the account",
+        "account transition",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "States the account state",
+            keywords=["account state:"],
+        ),
+        ProofItem(
+            "Ranks open items",
+            keywords=["open items (ranked by urgency):"],
+        ),
+        ProofItem(
+            "Names the champion picture",
+            keywords=["champion:"],
+        ),
+        ProofItem(
+            "Names what is already in flight",
+            keywords=["already in flight:"],
+        ),
+        ProofItem(
+            "Lists first-week actions",
+            keywords=["first week:"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _HANDOFF_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the fresh
+            # account record, opportunities, cases, and tickets are
+            # gathered directly; the source drafts carry the
+            # transcripts, Slack, and broader account context, and
+            # their deep links carry through to the composed draft.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("zendesk_list_tickets", {"organization": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            # Fallback: no prior drafts for this account, gather directly.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_search_transcripts", {"query": account, "limit": 5}),
+                ("zoom_search_transcripts", {"query": account, "limit": 5}),
+                ("zendesk_list_tickets", {"organization": account}),
+                ("linear_list_issues", {}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        account_record = results.get("salesforce_get_account") or {}
+        signals = _risk_signals(results, account)
+        pending = _pending_items(job, account)
+        escalations = _open_escalations(job, account)
+        schedules = _account_schedules(job, account)
+        open_items = _handoff_open_items(signals, escalations, pending)
+        people = _champion_people(results)
+        champion_name, champion_source = _extract_champion(
+            job, composed_text, memory_text
+        )
+        gaps: list[str] = []
+        champion: dict | None = None
+        if champion_name:
+            named = next(
+                (
+                    p
+                    for p in people
+                    if p["key"] == _person_key(champion_name)
+                ),
+                None,
+            )
+            if named is not None and named["side"] == "internal":
+                gaps.append(
+                    "The named champion %s is on our side (account "
+                    "owner or our team), not a customer champion."
+                    % champion_name
+                )
+            else:
+                email = ""
+                if named is not None and named["emails"]:
+                    email = sorted(named["emails"])[0]
+                champion = {"name": champion_name, "email": email}
+        previous_owner, previous_owner_source = _extract_previous_owner(
+            job, composed_text, memory_text
+        )
+        had_history = bool(composed_text) or bool(memory_text)
+        if previous_owner is None:
+            gaps.append(
+                "No previous owner named in the job, in any prior "
+                "draft, or in memory: the new CSM starts without a "
+                "named handover contact."
+            )
+        if not had_history:
+            gaps.append(
+                "No prior history for %s: no prior drafts and no "
+                "memory records. The brief is built from the gathered "
+                "records only." % account
+            )
+        if champion is None:
+            gaps.append(
+                "No champion on record for %s: the new CSM starts by "
+                "finding one." % account
+            )
+        renewal = str(account_record.get("renewal_date", "") or "")
+        renewal_days: int | None = None
+        try:
+            from datetime import date as _date
+
+            year, month, day = (int(part) for part in renewal.split("-"))
+            renewal_days = (_date(year, month, day) - _date.today()).days
+        except (ValueError, TypeError):
+            renewal_days = None
+        if not renewal:
+            gaps.append(
+                "No renewal date on the account record: the renewal "
+                "picture is unknown."
+            )
+        actions = _handoff_first_week(
+            account_record,
+            renewal_days,
+            open_items,
+            escalations,
+            pending,
+            champion,
+            champion_source,
+            previous_owner,
+            had_history,
+        )
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a handoff brief for account %r for the CSM "
+            "inheriting it. Cover: the account's current state, the "
+            "open items ranked by urgency, the risks with their "
+            "evidence, the champion and stakeholder picture, what is "
+            "already in flight, and the first-week actions. Use only "
+            "the context below. Never invent a previous owner, a "
+            "champion, a risk, or a date the context does not "
+            "support; say unknown where the records do not say."
+            % account,
+        )
+        system = (
+            "You are the handoff agent for a customer success team. "
+            "You hand an account to its new CSM with everything they "
+            "need in week one: the state, the open items, the risks, "
+            "and what is already moving. Name the people, cite the "
+            "evidence, and do not invent facts that are not in the "
+            "context. A gap the records do not fill is a gap, not a "
+            "guess."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + _handoff_block(
+            account,
+            account_record,
+            renewal_days,
+            signals,
+            open_items,
+            champion,
+            champion_source,
+            people,
+            pending,
+            escalations,
+            schedules,
+            previous_owner,
+            previous_owner_source,
+            actions,
+            gaps,
+        )
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -5728,7 +6371,7 @@ class CaseTriageAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All sixteen agents, keyed by name. All implemented."""
+    """All seventeen agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -5746,6 +6389,7 @@ def build_agents() -> dict[str, Agent]:
         "stakeholder-mapper": StakeholderMapperAgent(),
         "case-triage": CaseTriageAgent(),
         "champion-change": ChampionChangeAgent(),
+        "handoff": HandoffAgent(),
     }
     return agents
 

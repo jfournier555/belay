@@ -18,7 +18,7 @@ Public surface:
 - MCPClient: speaks MCP to an external server, stdio or SSE.
 - load_external_tools: register an external server's tools in the
   registry, namespaced by server (mcp_client.py).
-- AGENTS: the sixteen specialist agents, all implemented (agents.py).
+- AGENTS: the seventeen specialist agents, all implemented (agents.py).
 - TokenBudget: per-job token budget enforcement (summarizer.py).
 """
 

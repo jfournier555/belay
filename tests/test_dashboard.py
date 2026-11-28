@@ -105,9 +105,9 @@ class TestAgentStates(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_sixteen_agents_including_value_finder(self):
+    def test_seventeen_agents_including_value_finder(self):
         states = agent_states(self.queue)
-        self.assertEqual(len(states), 16)
+        self.assertEqual(len(states), 17)
         names = [s["name"] for s in states]
         self.assertIn("value-finder", names)
         self.assertIn("salesforce-updater", names)
@@ -115,6 +115,7 @@ class TestAgentStates(unittest.TestCase):
         self.assertIn("escalation-manager", names)
         self.assertIn("competitive-defense", names)
         self.assertIn("champion-change", names)
+        self.assertIn("handoff", names)
         finder = [s for s in states if s["name"] == "value-finder"][0]
         self.assertEqual(finder["status"], "implemented")
         self.assertEqual(finder["drafts"], 0)
@@ -212,7 +213,7 @@ class TestDashboardApp(unittest.TestCase):
         state = res.json()
         self.assertEqual(state["stats"]["drafts_ready"], 3)
         self.assertEqual(state["stats"]["accounts_watched"], 2)
-        self.assertEqual(len(state["agents"]), 16)
+        self.assertEqual(len(state["agents"]), 17)
         self.assertEqual(len(state["queue"]), 3)
         first = state["queue"][0]
         # Links ride along in the state; no aggregate proof score does.
