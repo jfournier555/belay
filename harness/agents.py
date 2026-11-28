@@ -1,12 +1,12 @@
-"""The specialist agents: the fifteen post-sales jobs the harness covers.
+"""The specialist agents: the sixteen post-sales jobs the harness covers.
 
-The fifteen jobs are the post-sales jobs that matter: scout, briefer,
+The sixteen jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
 risk-watcher, escalation-manager, competitive-defense,
-stakeholder-mapper, and case-triage.
+stakeholder-mapper, case-triage, and champion-change.
 
-V1 implements fifteen end to end:
+V1 implements sixteen end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -86,7 +86,17 @@ V1 implements fifteen end to end:
   agent's draft are flagged as such rather than re-triaged. With no
   open items the draft is a clean bill, stated as such.
 
-All fifteen are implemented. Every job in the harness has a working agent.
+- champion-change: catches a champion departure and rebuilds the
+  relationship map. Detection is harness-computed: a departure is
+  claimed only when an excerpt names the champion and says they left,
+  were promoted, or their mail bounces; silence is a medium signal,
+  never a departure. The draft names the departed champion with the
+  evidence, the relationship-map impact, ranked successor candidates
+  (a title is claimed only with a source link), and the rebuild plan
+  from the Champion Departure playbook's 7/14/30 spine. With no
+  champion on record the draft names the gap, never a departure.
+
+All sixteen are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -3696,6 +3706,926 @@ class StakeholderMapperAgent(Agent):
         )
 
 
+# The agents champion-change composes from (v0.18.0): advocate-finder
+# first (its drafts name champions), stakeholder-mapper (its map names
+# roles and relationships), risk-watcher (its brief flags departure
+# risk).
+_CHAMPION_CHANGE_SOURCE_AGENTS = (
+    "advocate-finder",
+    "stakeholder-mapper",
+    "risk-watcher",
+)
+
+
+# Phrases in a message or transcript excerpt that say a named person
+# has left the account. Substring match on the excerpt, like the
+# escalation words: "joined" alone is not a signal (people join
+# calls), so every phrase names a move, not an attendance.
+_CHAMPION_DEPARTURE_PHRASES = (
+    "has left",
+    "left the company",
+    "left us",
+    "left the account",
+    "moved to",
+    "now at",
+    "no longer with",
+    "departed",
+    "resigned",
+    "moved on to",
+    "took a role at",
+    "started at",
+)
+# Phrases that say the champion was promoted, not lost: the
+# playbook's best version of the problem. They still work there,
+# they still believe, and they can introduce the successor.
+_CHAMPION_PROMOTED_PHRASES = (
+    "promoted to",
+    "new role",
+    "moved into",
+    "stepping into",
+    "taking over",
+)
+# Phrases in a mail message that say it bounced.
+_CHAMPION_BOUNCE_PHRASES = (
+    "undeliverable",
+    "delivery failed",
+    "mailbox unavailable",
+    "address not found",
+    "delivery status notification",
+    "returned mail",
+    "could not be delivered",
+)
+
+
+def _extract_champion(
+    job: dict, composed_text: str, memory_text: str
+) -> tuple[str | None, str | None]:
+    """The champion this run is about, and where the name came from.
+
+    The job names one first (job["champion"], or "champion <Name>"
+    in the job text). Otherwise a prior draft names one: the
+    stakeholder-map block writes "- Name: champion", and an
+    advocate-finder draft writes "champion: Name". Memory is checked
+    the same way, last. Only the colon form is parsed from prose, so
+    a sentence like "the champion is solid" never yields a name.
+    Returns (name, source) or (None, None): no champion on record
+    is a gap, not an error.
+    """
+    named = str(job.get("champion", "") or "").strip()
+    if named:
+        return named, "job"
+    job_text = str(job.get("text", "") or "")
+    match = re.search(
+        r"[Cc]hampion:\s+([A-Z][a-z]+(?: [A-Z][a-z]+)+)", job_text
+    )
+    if match:
+        return match.group(1), "job"
+    for text, source in (
+        (composed_text or "", "prior draft"),
+        (memory_text or "", "memory"),
+    ):
+        found = re.search(
+            r"(?:^|\s)-\s+([A-Z][a-z]+(?: [A-Z][a-z]+)+): champion",
+            text,
+        )
+        if found:
+            return found.group(1), source
+        found = re.search(
+            r"[Cc]hampion:\s+([A-Z][a-z]+(?: [A-Z][a-z]+)+)", text
+        )
+        if found:
+            return found.group(1), source
+    return None, None
+
+
+def _extract_successor(
+    job: dict, composed_text: str, people: list[dict]
+) -> str | None:
+    """A successor named for the account: job["successor"] first,
+    then a prior draft's "successor: Name". The name must be a person
+    on the account (in the merged people list); a name no record
+    supports is not a successor, it is a guess."""
+    named = str(job.get("successor", "") or "").strip()
+    if named:
+        return named
+    match = re.search(
+        r"[Ss]uccessor:\s+([A-Z][a-z]+(?: [A-Z][a-z]+)+)",
+        composed_text or "",
+    )
+    if not match:
+        return None
+    keys = {person["key"] for person in people}
+    if _person_key(match.group(1)) in keys:
+        return match.group(1)
+    return None
+
+
+def _champion_appearances(champion_key: str, results: dict) -> list[str]:
+    """Where the champion appears in the gathered records: one entry
+    per tool that names them, in an author, speaker, participant, or
+    excerpt field. Empty means the champion is quiet in every record
+    gathered this run."""
+    seen: list[str] = []
+    checks = (
+        ("gmail_search_messages", "matches", ("author", "excerpt", "subject")),
+        ("gong_list_calls", "calls", ("participants",)),
+        ("gong_search_transcripts", "matches", ("speaker", "excerpt")),
+        ("zoom_list_recordings", "recordings", ("host",)),
+        ("zoom_search_transcripts", "matches", ("speaker", "excerpt")),
+        ("slack_search_messages", "matches", ("author", "excerpt")),
+    )
+    for tool, items_key, fields in checks:
+        result = results.get(tool) or {}
+        for item in result.get(items_key, []) or []:
+            hit = False
+            for field in fields:
+                value = item.get(field, "")
+                if isinstance(value, list):
+                    if any(
+                        champion_key in _person_key(part) for part in value
+                    ):
+                        hit = True
+                elif champion_key and champion_key in _person_key(value):
+                    hit = True
+            if hit:
+                seen.append(tool)
+                break
+    return seen
+
+
+def _champion_excerpts(
+    champion_key: str, champion_email: str, results: dict
+) -> list[dict]:
+    """Every excerpt that names the champion, with its source tool.
+    The excerpt is quoted as evidence; nothing is claimed about a
+    person no excerpt names."""
+    found: list[dict] = []
+    for tool, label in (
+        ("gmail_search_messages", "Gmail"),
+        ("gong_search_transcripts", "Gong transcript"),
+        ("zoom_search_transcripts", "Zoom transcript"),
+        ("slack_search_messages", "Slack"),
+    ):
+        result = results.get(tool) or {}
+        for match in result.get("matches", []) or []:
+            excerpt = str(match.get("excerpt", "") or "")
+            subject = str(match.get("subject", "") or "")
+            author = str(match.get("author", "") or "")
+            speaker = str(match.get("speaker", "") or "")
+            hay = " ".join((excerpt, subject, author, speaker))
+            if champion_key and champion_key in _person_key(hay):
+                found.append(
+                    {"tool": tool, "label": label, "excerpt": excerpt}
+                )
+                continue
+            email = (champion_email or "").lower()
+            if email and email in hay.lower():
+                found.append(
+                    {"tool": tool, "label": label, "excerpt": excerpt}
+                )
+    return found
+
+
+def _champion_departure_signals(
+    champion: dict, results: dict, known_before: bool
+) -> list[dict]:
+    """Detect a champion departure from the gathered records.
+
+    Deterministic, harness-computed: the model never decides whether
+    someone left. A departure is only claimed when an excerpt names
+    the champion and says so (moved on, promoted, or their mail
+    bounces). Silence is a medium signal, never a departure: a quiet
+    champion may be on leave, not gone. Returns severity-ranked
+    {"severity", "kind", "key", "text"} dicts; an empty list means
+    no departure evidence in this run's records.
+    """
+    signals: list[dict] = []
+    name = champion["name"]
+    key = _person_key(name)
+    for item in _champion_excerpts(key, champion.get("email", ""), results):
+        lowered = item["excerpt"].lower()
+        phrase = next(
+            (p for p in _CHAMPION_DEPARTURE_PHRASES if p in lowered),
+            None,
+        )
+        if phrase:
+            signals.append(
+                {
+                    "severity": "high",
+                    "kind": "champion-moved-on",
+                    "key": "champion-moved-on:" + key,
+                    "text": (
+                        "Champion moved on: %s (%s, %r): %r"
+                        % (
+                            name,
+                            item["label"],
+                            phrase,
+                            item["excerpt"][:120],
+                        )
+                    ),
+                }
+            )
+            continue
+        phrase = next(
+            (p for p in _CHAMPION_PROMOTED_PHRASES if p in lowered),
+            None,
+        )
+        if phrase:
+            signals.append(
+                {
+                    "severity": "medium",
+                    "kind": "champion-promoted",
+                    "key": "champion-promoted:" + key,
+                    "text": (
+                        "Champion promoted, not lost: %s (%s, %r): %r"
+                        % (
+                            name,
+                            item["label"],
+                            phrase,
+                            item["excerpt"][:120],
+                        )
+                    ),
+                }
+            )
+    gmail = results.get("gmail_search_messages") or {}
+    for match in gmail.get("matches", []) or []:
+        excerpt = str(match.get("excerpt", "") or "")
+        subject = str(match.get("subject", "") or "")
+        hay = (excerpt + " " + subject).lower()
+        if not any(p in hay for p in _CHAMPION_BOUNCE_PHRASES):
+            continue
+        email = (champion.get("email", "") or "").lower()
+        if key in _person_key(hay) or (email and email in hay):
+            signals.append(
+                {
+                    "severity": "high",
+                    "kind": "champion-bounce",
+                    "key": "champion-bounce:" + key,
+                    "text": (
+                        "Champion email bouncing: %s (Gmail delivery "
+                        "failure): %r" % (name, excerpt[:120])
+                    ),
+                }
+            )
+            break
+    if not _champion_appearances(key, results):
+        signals.append(
+            {
+                "severity": "medium",
+                "kind": "champion-quiet",
+                "key": "champion-quiet:" + key,
+                "text": (
+                    "Champion gone quiet: %s appears in none of the "
+                    "gathered records (Gmail, Gong calls and "
+                    "transcripts, Zoom recordings and transcripts, "
+                    "Slack). %s"
+                    % (
+                        name,
+                        "Prior drafts confirm they were active before."
+                        if known_before
+                        else "No prior record confirms they were "
+                        "active before, so quiet is unconfirmed "
+                        "against history.",
+                    )
+                ),
+            }
+        )
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for signal in signals:
+        if signal["key"] not in seen:
+            seen.add(signal["key"])
+            unique.append(signal)
+    unique.sort(key=lambda s: _SEVERITY_RANK[s["severity"]])
+    return unique
+
+
+def _champion_people(results: dict) -> list[dict]:
+    """The people on the account for the rebuild: the stakeholder
+    map's merged people, plus the contacts on the account record
+    (CSV contacts, Salesforce contacts), which the map's gather does
+    not read. A contact joins the map with the account record as its
+    source and evidence; nobody is invented."""
+    people = _stakeholder_people(results)
+    by_key = {person["key"]: person for person in people}
+    account = results.get("salesforce_get_account") or {}
+    for contact in account.get("contacts", []) or []:
+        if not isinstance(contact, dict):
+            continue
+        raw = str(contact.get("name", "") or "").strip()
+        key = _person_key(raw)
+        if not key:
+            continue
+        person = by_key.get(key)
+        if person is None:
+            person = {
+                "key": key,
+                "name": raw,
+                "title": "",
+                "side": "customer",
+                "sources": set(),
+                "evidence": [],
+                "champion_status": None,
+                "champion_since": None,
+                "moved_to": None,
+                "promoted": None,
+                "is_owner": False,
+                "handle_only": _is_handle(raw),
+                "emails": set(),
+            }
+            people.append(person)
+            by_key[key] = person
+        email = str(contact.get("email", "") or "").strip()
+        if email:
+            person["emails"].add(email)
+        person["sources"].add("salesforce_get_account")
+        person["evidence"].append("Contact on the account record")
+    return sorted(people, key=lambda p: p["name"].lower())
+
+
+def _title_in_result(person_key: str, value) -> str | None:
+    """A title for the person in one tool result: a dict whose name
+    matches and carries a non-empty title. Recursive, into lists and
+    nested dicts; the account record, contacts, and participants all
+    live at those depths."""
+    if isinstance(value, dict):
+        name = value.get("name")
+        if name and _person_key(name) == person_key:
+            title = str(value.get("title", "") or "").strip()
+            if title:
+                return title
+        for item in value.values():
+            found = _title_in_result(person_key, item)
+            if found:
+                return found
+        return None
+    if isinstance(value, list):
+        for item in value:
+            found = _title_in_result(person_key, item)
+            if found:
+                return found
+    return None
+
+
+def _title_with_link(
+    person_key: str, results: dict
+) -> tuple[str | None, str | None]:
+    """A person's title from a gathered record, and the tool that
+    named it, but only when that tool's result also produced a deep
+    link. A title without a source link is dropped, not drafted:
+    the caller lists the person as title unknown. No connector
+    returns titles today, so this usually returns nothing; the rule
+    is the point, and the tests prove both branches with fake
+    records."""
+    for tool, result in results.items():
+        title = _title_in_result(person_key, result)
+        if not title:
+            continue
+        if extract_links(tool, result):
+            return title, tool
+    return None, None
+
+
+def _successor_candidates(
+    people: list[dict],
+    relationships: list[dict],
+    champion_key: str,
+    results: dict,
+) -> list[dict]:
+    """Rank the successor candidates: customer stakeholders besides
+    the champion, scored on observable signals. +2 appears with the
+    champion in a call or thread (they already know each other); +1
+    a senior title with a source link; +1 a budget title with a
+    source link; +1 present across three or more sources. A title
+    without a link earns nothing and is listed as unknown. Ranked by
+    score, then name; the ranking is harness-computed, never model
+    prose."""
+    connected: set[str] = set()
+    for rel in relationships:
+        if rel["a"] == champion_key:
+            connected.add(rel["b"])
+        elif rel["b"] == champion_key:
+            connected.add(rel["a"])
+    candidates: list[dict] = []
+    for person in people:
+        if person["side"] != "customer":
+            continue
+        if person["key"] == champion_key:
+            continue
+        score = 0
+        if person["key"] in connected:
+            score += 2
+        title, title_source = _title_with_link(person["key"], results)
+        title_words = (title or "").lower().split()
+        title_text = " ".join(title_words)
+        if any(word in title_words for word in _SENIOR_TITLE_WORDS) or (
+            "vice president" in title_text
+        ):
+            score += 1
+        if title and any(
+            word in title.lower() for word in _BUDGET_TITLE_WORDS
+        ):
+            score += 1
+        if len(person["sources"]) >= 3:
+            score += 1
+        candidates.append(
+            {
+                "key": person["key"],
+                "name": person["name"],
+                "title": title,
+                "title_source": title_source,
+                "score": score,
+                "evidence": list(person["evidence"]),
+                "sources": sorted(person["sources"]),
+            }
+        )
+    candidates.sort(key=lambda c: (-c["score"], c["name"].lower()))
+    return candidates
+
+
+def _champion_impact(
+    champion_key: str, people: list[dict], relationships: list[dict]
+) -> dict:
+    """What the departure does to the relationship map: who the
+    champion connected to, whether a second relationship survives,
+    whether an economic buyer remains. All from the map's own
+    evidence."""
+    by_key = {person["key"]: person for person in people}
+    others = [
+        person
+        for person in people
+        if person["side"] == "customer" and person["key"] != champion_key
+    ]
+    connections: list[dict] = []
+    for rel in relationships:
+        other_key = None
+        if rel["a"] == champion_key:
+            other_key = rel["b"]
+        elif rel["b"] == champion_key:
+            other_key = rel["a"]
+        if other_key is None:
+            continue
+        other = by_key.get(other_key)
+        connections.append(
+            {
+                "name": other["name"] if other else other_key,
+                "calls": rel["calls"],
+                "threads": rel["threads"],
+            }
+        )
+    return {
+        "connections": connections,
+        "other_customers": len(others),
+        "second_relationship": len(others) > 0,
+        "buyer_remains": any(_is_budget_holder(p) for p in others),
+    }
+
+
+def _champion_change_block(
+    account: str,
+    champion: dict | None,
+    champion_source: str | None,
+    signals: list[dict],
+    impact: dict | None,
+    candidates: list[dict],
+    criteria: dict,
+    renewal_days: int | None,
+    gaps: list[str],
+) -> str:
+    """The harness-written champion-change brief appended to the
+    draft: the departure finding with its evidence, the
+    relationship-map impact, the ranked rebuild plan, and the
+    Champion Departure playbook's 7/14/30 spine. No departure means
+    a clean bill, stated as such; no champion on record means the
+    gap is named, never papered over."""
+    lines = ["Champion change (harness-computed):", ""]
+    if champion is None:
+        lines.append(
+            "Champion: none on record for %s. No champion is named "
+            "in the job, in any prior draft, or in the account "
+            "record. The rebuild starts with finding one." % account
+        )
+    else:
+        lines.append(
+            "Champion: %s (source: %s)."
+            % (champion["name"], champion_source or "unknown")
+        )
+    severity = signals[0]["severity"] if signals else "none"
+    lines.append("Overall severity: %s." % severity)
+    lines.append("")
+    lines.append("Departure:")
+    if champion is None:
+        lines.append(
+            "- No departure to check: no champion on record."
+        )
+    elif not signals:
+        lines.append(
+            "- No departure detected in the gathered records for "
+            "%s. The champion is still in place as far as the "
+            "records show." % champion["name"]
+        )
+    else:
+        for signal in signals:
+            lines.append(
+                "- [%s] %s" % (signal["severity"], signal["text"])
+            )
+    lines.append("")
+    lines.append("Relationship-map impact:")
+    if impact is None:
+        lines.append(
+            "- No champion, so no departure impact to measure."
+        )
+    else:
+        if impact["connections"]:
+            for conn in impact["connections"]:
+                parts = []
+                if conn["calls"]:
+                    parts.append(
+                        "%d call%s"
+                        % (
+                            conn["calls"],
+                            "s" if conn["calls"] != 1 else "",
+                        )
+                    )
+                if conn["threads"]:
+                    parts.append(
+                        "%d email thread%s"
+                        % (
+                            conn["threads"],
+                            "s" if conn["threads"] != 1 else "",
+                        )
+                    )
+                lines.append(
+                    "- %s connected to %s (%s)."
+                    % (
+                        champion["name"],
+                        conn["name"],
+                        " and in ".join(parts),
+                    )
+                )
+        else:
+            lines.append(
+                "- No recorded connection between %s and any other "
+                "stakeholder: no shared call or thread in the "
+                "gathered records." % champion["name"]
+            )
+        lines.append(
+            "- Second relationship survives: %s (%d other customer "
+            "stakeholder(s) on the map)."
+            % (
+                "yes" if impact["second_relationship"] else "no",
+                impact["other_customers"],
+            )
+        )
+        lines.append(
+            "- Economic buyer remains: %s."
+            % ("yes" if impact["buyer_remains"] else "no")
+        )
+    lines.append("")
+    if champion is None:
+        lines.append("Potential champions (ranked):")
+    else:
+        lines.append("Rebuild plan (ranked successors):")
+    shown = candidates[:3]
+    if not shown:
+        lines.append(
+            "- No successor candidate in the gathered records."
+        )
+    for candidate in shown:
+        title = candidate["title"]
+        if title:
+            title_text = "%s (source: %s)" % (
+                title,
+                candidate["title_source"],
+            )
+        else:
+            title_text = "title unknown"
+        lines.append(
+            "- %s (score %d): %s. Evidence: %s."
+            % (
+                candidate["name"],
+                candidate["score"],
+                title_text,
+                "; ".join(candidate["evidence"])
+                or "no evidence recorded",
+            )
+        )
+    lines.append("")
+    if champion is None:
+        verdict = "No champion on record: find one first."
+    elif not signals:
+        verdict = (
+            "No departure detected: the champion is still in place."
+        )
+    else:
+        top = candidates[0]["score"] if candidates else 0
+        second = impact["second_relationship"] if impact else False
+        if (
+            not candidates
+            and not second
+            and renewal_days is not None
+            and renewal_days <= 30
+        ):
+            verdict = "Too late to rebuild, protect the exit."
+        elif top < 2 or not second:
+            verdict = "Rebuildable, but thin."
+        else:
+            verdict = "Rebuildable, move now."
+    lines.append("Rebuild verdict: %s" % verdict)
+    lines.append("")
+    lines.append("Champion Departure playbook checks:")
+    lines.append(
+        "- Second relationship in the account: %s."
+        % criteria["second"]
+    )
+    lines.append(
+        "- Successor known: %s."
+        % (criteria["successor"] or "no")
+    )
+    lines.append(
+        "- Successor's priorities known: %s."
+        % criteria["successor_priorities"]
+    )
+    lines.append(
+        "- Relationships span more than one department: %s."
+        % criteria["multi_dept"]
+    )
+    lines.append(
+        "- Value documented: %s." % criteria["value_doc"]
+    )
+    lines.append(
+        "- Renewal date and decision process known: %s."
+        % criteria["renewal_known"]
+    )
+    lines.append("")
+    lines.append("The 7/14/30 spine:")
+    lines.append(
+        "- Days 1-7: map the account and reach the successor. "
+        "List every person the champion touched, find the "
+        "successor, and get one meeting. Say it once, clearly: "
+        "the champion left, you are here, and the value is real."
+    )
+    lines.append(
+        "- Days 8-14: re-prove the value in the successor's terms. "
+        "Bring the documented results, in their numbers, and ask "
+        "what they need to see to believe it."
+    )
+    lines.append(
+        "- Days 15-30: the new champion's first win, then the "
+        "renewal conversation. Get the successor one visible win "
+        "with the product, then talk about the renewal. Never "
+        "before."
+    )
+    if gaps:
+        lines.append("")
+        lines.append("Gaps:")
+        for gap in gaps:
+            lines.append("- %s" % gap)
+    return "\n".join(lines)
+
+
+class ChampionChangeAgent(Agent):
+    """Catches a champion departure and rebuilds the relationship map.
+
+    Gathers: account summary and contacts, recent email threads,
+    Gong calls and transcripts, Zoom recordings and transcripts, and
+    recent Slack signals. Drafts: the departed champion with the
+    evidence, the relationship-map impact, ranked successor
+    candidates, and the rebuild plan from the Champion Departure
+    playbook's 7/14/30 spine.
+
+    Composition (v1.1.0): when prior drafts from advocate-finder,
+    stakeholder-mapper, and risk-watcher exist for the account, the
+    brief is built from those drafts instead of re-gathering the same
+    context; only the fresh departure signals are gathered directly.
+    When no prior drafts exist, the agent gathers directly.
+
+    Detection is harness-computed, never model prose: a departure is
+    claimed only when an excerpt names the champion and says they
+    left, were promoted, or their mail bounces; silence is a medium
+    signal, never a departure. A successor's title is claimed only
+    when a gathered record names it with a source link; a title
+    without one is dropped. With no champion on record the draft
+    names the gap, never a departure.
+    """
+
+    name = "champion-change"
+    display_name = "Champion Change"
+    description = (
+        "Catches when a key contact leaves and rebuilds the "
+        "relationship map: the departed champion, the evidence, "
+        "who could succeed them, and the rebuild plan."
+    )
+    keywords = [
+        "champion change",
+        "champion-change",
+        "champion left",
+        "champion departed",
+        "champion moved",
+        "champion gone",
+        "champion has left",
+        "left the account",
+        "successor",
+        "rebuild the relationship",
+        "relationship rebuild",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Names the champion or the gap",
+            keywords=["champion:"],
+        ),
+        ProofItem(
+            "States the departure finding",
+            keywords=["departure:"],
+        ),
+        ProofItem(
+            "Names successor candidates or the gap",
+            keywords=["successor"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _CHAMPION_CHANGE_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the fresh
+            # departure signals are gathered directly; the source
+            # drafts carry the transcripts and the broader account
+            # context, and their deep links carry through to the
+            # composed draft.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_list_calls", {"account": account, "days": 30}),
+                ("zoom_list_recordings", {"account": account, "days": 30}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            # Fallback: no prior drafts for this account, gather directly.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("gong_list_calls", {"account": account, "days": 30}),
+                ("gong_search_transcripts", {"query": account, "limit": 5}),
+                ("zoom_list_recordings", {"account": account, "days": 30}),
+                ("zoom_search_transcripts", {"query": account, "limit": 5}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        people = _champion_people(results)
+        relationships = _stakeholder_relationships(results)
+        champion_name, champion_source = _extract_champion(
+            job, composed_text, memory_text
+        )
+        gaps: list[str] = []
+        champion: dict | None = None
+        champion_key = ""
+        if champion_name:
+            champion_key = _person_key(champion_name)
+            named = next(
+                (p for p in people if p["key"] == champion_key), None
+            )
+            if named is not None and named["side"] == "internal":
+                gaps.append(
+                    "The named champion %s is on our side (account "
+                    "owner or our team), not a customer champion."
+                    % champion_name
+                )
+            else:
+                email = ""
+                if named is not None and named["emails"]:
+                    email = sorted(named["emails"])[0]
+                champion = {"name": champion_name, "email": email}
+        known_before = champion_source in ("prior draft", "memory")
+        signals = (
+            _champion_departure_signals(champion, results, known_before)
+            if champion is not None
+            else []
+        )
+        impact = (
+            _champion_impact(champion_key, people, relationships)
+            if champion is not None
+            else None
+        )
+        candidates = _successor_candidates(
+            people, relationships, champion_key, results
+        )
+        account_record = results.get("salesforce_get_account") or {}
+        renewal = str(account_record.get("renewal_date", "") or "")
+        renewal_days: int | None = None
+        try:
+            from datetime import date as _date
+
+            year, month, day = (int(part) for part in renewal.split("-"))
+            renewal_days = (_date(year, month, day) - _date.today()).days
+        except (ValueError, TypeError):
+            renewal_days = None
+        criteria = {
+            "second": (
+                "yes"
+                if impact is not None and impact["second_relationship"]
+                else "no"
+            ),
+            "successor": _extract_successor(
+                job, composed_text, people
+            ),
+            "successor_priorities": "unknown",
+            "multi_dept": "unknown",
+            "value_doc": (
+                "yes"
+                if _load_prior_items(job, account, ("value-finder",))
+                else "unknown"
+            ),
+            "renewal_known": "yes" if renewal else "no",
+        }
+        if champion is not None and not signals:
+            gaps.append(
+                "No departure evidence for %s in this run's records: "
+                "no excerpt says they left, were promoted, or "
+                "bounced." % champion["name"]
+            )
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a champion-change brief for account %r. Cover: "
+            "the champion and whether they have left, the evidence "
+            "for the departure, the impact on the relationship map, "
+            "who could succeed them, and the rebuild plan. Use only "
+            "the context below. Never invent a departure, a person, "
+            "or a title the context does not support; say unknown "
+            "where the records do not say." % account,
+        )
+        system = (
+            "You are the champion-change agent for a customer "
+            "success team. You catch a champion leaving before the "
+            "renewal feels it, and you rebuild the relationship map "
+            "around a successor. Name the people, cite the evidence, "
+            "and do not invent facts that are not in the context. A "
+            "departure the records do not show is not a departure."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + _champion_change_block(
+            account,
+            champion,
+            champion_source,
+            signals,
+            impact,
+            candidates,
+            criteria,
+            renewal_days,
+            gaps,
+        )
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -4798,7 +5728,7 @@ class CaseTriageAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All fifteen agents, keyed by name. All implemented."""
+    """All sixteen agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -4815,6 +5745,7 @@ def build_agents() -> dict[str, Agent]:
         "competitive-defense": CompetitiveDefenseAgent(),
         "stakeholder-mapper": StakeholderMapperAgent(),
         "case-triage": CaseTriageAgent(),
+        "champion-change": ChampionChangeAgent(),
     }
     return agents
 
