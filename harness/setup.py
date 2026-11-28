@@ -591,6 +591,20 @@ def detect_provider(config: Config) -> str:
     return "custom"
 
 
+def provider_display_name(key: str) -> str:
+    """Short header label for a provider key: the PROVIDERS label
+    with any parenthetical and a trailing " endpoint" stripped, so
+    "Ollama (local, no key)" reads "Ollama" and "Custom endpoint"
+    reads "Custom". An unknown key reads capitalized."""
+    label = PROVIDERS.get(key, {}).get("label")
+    if label:
+        name = str(label).split(" (")[0]
+        if name.endswith(" endpoint"):
+            name = name[: -len(" endpoint")]
+        return name
+    return key.capitalize()
+
+
 def ollama_cli_present() -> bool:
     """True when the `ollama` CLI is on PATH (needed to pull a model)."""
     return shutil.which("ollama") is not None
@@ -1052,6 +1066,7 @@ def setup_state(config: Config) -> dict:
     return {
         "llm": {
             "provider": detect_provider(config),
+            "provider_label": provider_display_name(detect_provider(config)),
             "base_url": config.llm_base_url,
             "model": config.llm_model,
             "api_key_set": bool(config.llm_api_key),

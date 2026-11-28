@@ -33,6 +33,7 @@ from harness.setup import (
     is_first_run,
     llm_available,
     print_setup_hint,
+    provider_display_name,
     read_env_file,
     run_setup_wizard,
     seed_demo,
@@ -599,6 +600,17 @@ class TestWizardLlm(unittest.TestCase):
         self.assertEqual(detect_provider(self.config), "custom")
         self.config.llm_base_url = "http://192.168.1.5:11434/v1"
         self.assertEqual(detect_provider(self.config), "ollama")
+
+    def test_provider_display_name(self):
+        # Header-short: the Ollama label's parenthetical and the
+        # Custom label's " endpoint" both drop; other labels pass
+        # through untouched, unknown keys read capitalized.
+        self.assertEqual(provider_display_name("ollama"), "Ollama")
+        self.assertEqual(provider_display_name("openai"), "OpenAI")
+        self.assertEqual(provider_display_name("openrouter"), "OpenRouter")
+        self.assertEqual(provider_display_name("groq"), "Groq")
+        self.assertEqual(provider_display_name("custom"), "Custom")
+        self.assertEqual(provider_display_name("something-new"), "Something-new")
 
     def test_verify_llm(self):
         self.assertTrue(verify_llm(self.config))

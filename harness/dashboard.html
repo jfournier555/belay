@@ -421,8 +421,15 @@ function statCard(label, num, hint, warn) {
     '<div class="hint">' + hint + '</div></div>';
 }
 function render(state) {
+  var llmLabel = "";
+  if (!state.stub_mode && state.llm) {
+    llmLabel =
+      " · " +
+      state.llm.provider_label +
+      (state.llm.model ? " " + state.llm.model : "");
+  }
   document.getElementById("version").textContent =
-    "v" + state.version + (state.stub_mode ? " · stub mode" : "");
+    "v" + state.version + (state.stub_mode ? " · stub mode" : llmLabel);
   lastState = state;
   renderFirstRun(state);
   var s = state.stats;
@@ -625,7 +632,7 @@ async function renderWizardStep1() {
     html += '<p>Ollama is not installed, and there is no automated install path for this system (' + esc(status.system) + '). Get it at ollama.com/download, then come back here.</p>';
   }
   if (hostedReady) {
-    html += '<p><span class="ok">A hosted provider is configured (' + esc(setup.llm.provider) + ').</span> Belay drafts with it.</p>';
+    html += '<p><span class="ok">A hosted provider is configured (' + esc(setup.llm.provider_label) + ').</span> Belay drafts with it.</p>';
   } else {
     html += '<p class="note">Or pick a hosted provider instead: open Settings above, choose a provider, save its API key, then come back here.</p>';
   }

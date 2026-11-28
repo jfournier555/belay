@@ -53,7 +53,7 @@ from .scheduler import (
     next_run_after,
     validate_schedule,
 )
-from .setup import is_first_run, seed_demo
+from .setup import detect_provider, is_first_run, provider_display_name, seed_demo
 from .summarizer import estimate_tokens
 from .sweep import SweepStore, run_sweep
 from .wizard import OllamaSetup
@@ -361,6 +361,14 @@ def build_state(
         "writeback": writeback_view(queue),
         "mcp_servers": mcp_servers_view(mcp_servers),
         "stub_mode": config.stub_mode,
+        # The LLM the header names: provider key, short display
+        # label, and model. The header shows "· stub mode" when
+        # stub_mode is on, else "· {provider_label} {model}".
+        "llm": {
+            "provider": detect_provider(config),
+            "provider_label": provider_display_name(detect_provider(config)),
+            "model": config.llm_model,
+        },
         "first_run": is_first_run(
             config, queue, memory, schedules, escalations
         ),

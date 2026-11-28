@@ -213,6 +213,19 @@ class TestDashboardApp(unittest.TestCase):
         self.assertIn("Everything is a draft until I say send.", res.text)
         self.assertIn("Approval queue", res.text)
 
+    def test_index_renders_llm_header_code(self):
+        # The header names the connected LLM: stub mode keeps
+        # "· stub mode", otherwise "· {provider_label} {model}".
+        # The JS is not executed in tests, so pin the composition
+        # and the wizard's use of the label instead of the raw key.
+        res = self.client.get("/")
+        self.assertEqual(res.status_code, 200)
+        self.assertIn('" · stub mode"', res.text)
+        self.assertIn("state.llm.provider_label", res.text)
+        self.assertIn("state.llm.model", res.text)
+        self.assertIn("setup.llm.provider_label", res.text)
+        self.assertNotIn("setup.llm.provider)", res.text)
+
     def test_state_endpoint_returns_real_numbers(self):
         res = self.client.get("/api/state")
         self.assertEqual(res.status_code, 200)
@@ -286,6 +299,57 @@ class TestBuildState(unittest.TestCase):
             ):
                 state = build_state(queue, Config())
             self.assertEqual(state["setup_command"], "belay.exe setup")
+
+    def test_state_carries_llm_header_label(self):
+        # The header renders from this payload: stub mode shows
+        # "stub mode"; a connected LLM shows "· {label} {model}".
+        # Ollama, OpenAI, and Custom (e.g. Gemini on a custom
+        # endpoint) each carry the label and model the header needs.
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = _sample_queue(os.path.join(tmp, "approvals.json"))
+            state = build_state(queue, Config())
+            self.assertEqual(
+                state["llm"],
+                {
+                    "provider": "ollama",
+                    "provider_label": "Ollama",
+                    "model": "llama3.1:8b",
+                },
+            )
+            state = build_state(queue, Config(stub_mode=True))
+            self.assertTrue(state["stub_mode"])
+            self.assertEqual(state["llm"]["provider_label"], "Ollama")
+            state = build_state(
+                queue,
+                Config(
+                    llm_base_url="https://api.openai.com/v1",
+                    llm_model="gpt-4o",
+                ),
+            )
+            self.assertFalse(state["stub_mode"])
+            self.assertEqual(
+                state["llm"],
+                {
+                    "provider": "openai",
+                    "provider_label": "OpenAI",
+                    "model": "gpt-4o",
+                },
+            )
+            state = build_state(
+                queue,
+                Config(
+                    llm_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                    llm_model="gemini-2.0-flash",
+                ),
+            )
+            self.assertEqual(
+                state["llm"],
+                {
+                    "provider": "custom",
+                    "provider_label": "Custom",
+                    "model": "gemini-2.0-flash",
+                },
+            )
 
 
 class TestStubDraftMarking(unittest.TestCase):

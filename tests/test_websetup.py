@@ -142,6 +142,31 @@ class TestSetupState(_EnvCleanCase):
         self.assertEqual(state["providers"][0]["key"], "ollama")
         self.assertEqual(state["llm"]["provider"], "ollama")
 
+    def test_state_llm_carries_short_provider_label(self):
+        # The header and the wizard read the label, never the raw
+        # provider key: Ollama, OpenAI, Custom, each with its model.
+        state = setup_state(Config())
+        self.assertEqual(state["llm"]["provider_label"], "Ollama")
+        self.assertEqual(state["llm"]["model"], "llama3.1:8b")
+        state = setup_state(
+            Config(
+                llm_base_url="https://api.openai.com/v1",
+                llm_model="gpt-4o",
+            )
+        )
+        self.assertEqual(state["llm"]["provider"], "openai")
+        self.assertEqual(state["llm"]["provider_label"], "OpenAI")
+        self.assertEqual(state["llm"]["model"], "gpt-4o")
+        state = setup_state(
+            Config(
+                llm_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+                llm_model="gemini-2.0-flash",
+            )
+        )
+        self.assertEqual(state["llm"]["provider"], "custom")
+        self.assertEqual(state["llm"]["provider_label"], "Custom")
+        self.assertEqual(state["llm"]["model"], "gemini-2.0-flash")
+
 
 class TestApplyLlmChoice(_EnvCleanCase):
     def test_ollama_writes_base_url_and_model(self):
