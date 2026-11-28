@@ -1,13 +1,13 @@
-"""The specialist agents: the eighteen post-sales jobs the harness covers.
+"""The specialist agents: the nineteen post-sales jobs the harness covers.
 
-The eighteen jobs are the post-sales jobs that matter: scout, briefer,
+The nineteen jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
 risk-watcher, escalation-manager, competitive-defense,
-stakeholder-mapper, case-triage, champion-change, handoff, and
-adoption-gaps.
+stakeholder-mapper, case-triage, champion-change, handoff,
+adoption-gaps, and call-recap-and-commitments.
 
-V1 implements eighteen end to end:
+V1 implements nineteen end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -114,7 +114,7 @@ V1 implements eighteen end to end:
   missing the draft names what to collect instead of guessing. With
   no gaps the draft says so, stated as such.
 
-All eighteen are implemented. Every job in the harness has a working agent.
+All nineteen are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -5759,6 +5759,795 @@ class AdoptionGapsAgent(Agent):
         )
 
 
+# The one agent whose drafts call-recap-and-commitments composes from:
+# its own prior recaps. Carried-over commitments are read out of the
+# latest prior recap draft, never re-invented.
+_CALL_RECAP_SOURCE_AGENTS = ("call-recap-and-commitments",)
+
+
+_COMPLETION_PHRASES = (
+    "done",
+    "shipped",
+    "fixed",
+    "completed",
+    "resolved",
+    "delivered",
+    "closed",
+    "taken care of",
+    "is live",
+    "went out",
+    "already sent",
+    "already done",
+)
+
+_COMMITMENT_STOPWORDS = {
+    "with", "from", "that", "this", "will", "when", "after", "before",
+    "about", "into", "over", "under", "their", "them", "they", "have",
+    "been", "were", "what", "your", "ours", "should", "would", "could",
+    "there", "here", "then", "than", "also",
+}
+
+_MONTHS = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5,
+    "june": 6, "july": 7, "august": 8, "september": 9, "october": 10,
+    "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+    "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+_WILL_PATTERN = re.compile(
+    r"\b(?:I will|I'll|we will|we'll|I'm going to|we're going to)\b",
+    re.IGNORECASE,
+)
+
+_FIRST_PERSON_PATTERN = re.compile(
+    r"\b(?:I will|I'll|I'm going to)\b", re.IGNORECASE
+)
+
+_COMMITMENT_LINE_RE = re.compile(
+    r'^(?:-|\d+\.)\s+"(?P<text>[^"]+)" — owner: (?P<owner>[^;]+); '
+    r"due: (?P<due>[^;]+); status: (?P<status>[^;]+); "
+    r"source: (?P<source>.+?)\.?$"
+)
+
+
+def _parse_iso_date(value) -> "date | None":
+    """Parse an ISO date or datetime string into a date. None, never a
+    crash."""
+    if not value or not isinstance(value, str):
+        return None
+    text = value.strip().replace("Z", "+00:00")
+    try:
+        from datetime import datetime as _datetime
+
+        return _datetime.fromisoformat(text).date()
+    except ValueError:
+        return None
+
+
+def _parse_due_date(text: str, call_date=None):
+    """A due date from commitment wording, or None ("no date given").
+
+    Understands ISO dates, "by <Month> <day>", "next week", "by Friday"
+    / "on Friday", "tomorrow", and "end of week". The reference date is
+    the call date (or today when the call date is unknown). A month/day
+    already past rolls to next year. Anything else is None, never a
+    guess.
+    """
+    from datetime import date as _date
+    from datetime import timedelta as _timedelta
+
+    if not text:
+        return None
+    lowered = " " + text.lower() + " "
+    reference = call_date or _date.today()
+    iso = re.search(r"(\d{4})-(\d{2})-(\d{2})", text)
+    if iso:
+        try:
+            return _date(int(iso.group(1)), int(iso.group(2)), int(iso.group(3)))
+        except ValueError:
+            return None
+    month_day = re.search(
+        r"\bby\s+([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?\b", lowered
+    )
+    if month_day:
+        month = _MONTHS.get(month_day.group(1))
+        if month:
+            try:
+                due = _date(reference.year, month, int(month_day.group(2)))
+            except ValueError:
+                return None
+            if due < reference:
+                try:
+                    due = _date(
+                        reference.year + 1, month, int(month_day.group(2))
+                    )
+                except ValueError:
+                    return None
+            return due
+    if "next week" in lowered:
+        return reference + _timedelta(days=7)
+    if "tomorrow" in lowered:
+        return reference + _timedelta(days=1)
+    if "end of week" in lowered or "eow" in lowered:
+        return reference + _timedelta(days=(4 - reference.weekday()) % 7)
+    if re.search(r"\b(?:by|on)\s+friday\b", lowered):
+        days_ahead = (4 - reference.weekday()) % 7 or 7
+        return reference + _timedelta(days=days_ahead)
+    return None
+
+
+def _extract_owner(action_text: str) -> str:
+    """The actor in "Name to <verb> ..." (Zoom action items, Gong key
+    points). Empty when no actor is named: the commitment is ownerless,
+    never assigned by guess."""
+    match = re.match(
+        r"^\s*([A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+)?)\s+to\s+",
+        action_text or "",
+    )
+    return match.group(1) if match else ""
+
+
+def _commitment_from_action_item(item, source: str, call_date=None) -> dict | None:
+    """One commitment from a Zoom action item (or a Gong key point
+    phrased as an action). The item text is the wording; the leading
+    actor is the owner; the due date is parsed from the wording."""
+    text = " ".join(str(item or "").split()).strip()
+    if not text:
+        return None
+    return {
+        "text": text,
+        "owner": _extract_owner(text),
+        "due": _parse_due_date(text, call_date),
+        "source": source,
+        "status": "new",
+    }
+
+
+def _extract_commitments_from_text(
+    text, speaker: str, source: str, call_date=None
+) -> list[dict]:
+    """Commitment candidates from transcript prose: sentences with a
+    first-person promise ("I will ...", "we will ..."). Anything else
+    is discussion, not a commitment. A first-person promise belongs to
+    the speaker; a "we" promise names no owner and is ownerless."""
+    found: list[dict] = []
+    if not text:
+        return found
+    for raw in re.split(r"(?<=[.!?])\s+", str(text).strip()):
+        sentence = " ".join(raw.split()).strip()
+        if not sentence or not _WILL_PATTERN.search(sentence):
+            continue
+        first_person = bool(_FIRST_PERSON_PATTERN.search(sentence))
+        owner = (speaker or "").strip() if first_person else ""
+        found.append(
+            {
+                "text": sentence,
+                "owner": owner,
+                "due": _parse_due_date(sentence, call_date),
+                "source": source,
+                "status": "new",
+            }
+        )
+    return found
+
+
+def _norm_commitment_text(text: str) -> str:
+    """Normalized commitment text for matching: lowercase, punctuation
+    stripped, whitespace collapsed."""
+    lowered = re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower())
+    return " ".join(lowered.split())
+
+
+def _parse_commitment_line(line: str) -> dict | None:
+    """Parse one commitment line from a prior call-recap draft (or a
+    memory excerpt of one) back into a commitment. A truncated or
+    malformed line is None, never a crash."""
+    match = _COMMITMENT_LINE_RE.match(line.strip())
+    if not match:
+        return None
+    due_text = match.group("due").strip()
+    due = None
+    if due_text != "no date given":
+        due = _parse_iso_date(due_text)
+    owner = match.group("owner").strip()
+    if owner == "no owner named":
+        owner = ""
+    return {
+        "text": match.group("text").strip(),
+        "owner": owner,
+        "due": due,
+        "source": match.group("source").strip(),
+        "status": match.group("status").strip(),
+    }
+
+
+def _prior_commitments(job: dict, account: str) -> list[dict]:
+    """Prior commitments for this account: parsed out of the prior
+    call-recap drafts in the approval queue, then out of memory records
+    of this agent's drafts. Newest first, deduped by normalized text.
+    A queue or memory file the job does not name reads as no prior
+    commitments, never an error."""
+    prior: list[dict] = []
+    seen: set[str] = set()
+
+    def _absorb(text: str) -> None:
+        for line in str(text or "").splitlines():
+            parsed = _parse_commitment_line(line)
+            if not parsed:
+                continue
+            key = _norm_commitment_text(parsed["text"])
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            prior.append(parsed)
+
+    for item in _load_prior_items(job, account, _CALL_RECAP_SOURCE_AGENTS):
+        _absorb(item.draft)
+    path = job.get("memory_file")
+    if path:
+        try:
+            memory = AccountMemory(path)
+        except Exception:
+            memory = None
+        if memory is not None:
+            for record in memory.records_for(account):
+                if record.agent != "call-recap-and-commitments":
+                    continue
+                _absorb(record.excerpt)
+                if record.correction:
+                    _absorb(record.correction)
+    return prior
+
+
+def _distinctive_words(text: str) -> set[str]:
+    """The content words of a commitment: longer than three letters,
+    minus stopwords. Used to tell whether new material talks about the
+    same commitment."""
+    words = set()
+    for word in re.findall(r"[a-z]+", (text or "").lower()):
+        if len(word) > 3 and word not in _COMMITMENT_STOPWORDS:
+            words.add(word)
+    return words
+
+
+def _commitment_kept(text: str, material: str) -> str | None:
+    """Whether the new call material shows a prior commitment was kept.
+    Returns the evidence sentence, or None. A sentence counts when it
+    carries at least two of the commitment's distinctive words and a
+    completion phrase ("done", "shipped", "fixed", ...)."""
+    words = _distinctive_words(text)
+    if len(words) < 2:
+        return None
+    for raw in re.split(r"(?<=[.!?])\s+", str(material or "")):
+        sentence = " ".join(raw.split()).strip()
+        if not sentence:
+            continue
+        lowered = sentence.lower()
+        if not any(phrase in lowered for phrase in _COMPLETION_PHRASES):
+            continue
+        hits = sum(1 for word in words if word in lowered)
+        if hits >= 2:
+            return sentence
+    return None
+
+
+def _status_commitments(new, prior, material, today=None):
+    """Merge this call's commitments with the prior ones.
+
+    A new commitment matching a prior one (same wording, normalized)
+    is carried over, keeping the earlier due date when the new wording
+    names none. A prior commitment with no match is kept (closed since
+    last recap, with the evidence sentence) when the new material shows
+    it done, and carried over still open otherwise. Any open
+    commitment whose due date has passed is overdue. Returns
+    (open_commitments, closed_commitments). Harness-computed, never
+    model prose.
+    """
+    from datetime import date as _date
+
+    today = today or _date.today()
+    open_commitments: list[dict] = []
+    closed: list[dict] = []
+    matched_prior: set[str] = set()
+    for commitment in new:
+        key = _norm_commitment_text(commitment["text"])
+        prior_match = None
+        for candidate in prior:
+            if _norm_commitment_text(candidate["text"]) == key:
+                prior_match = candidate
+                break
+        entry = dict(commitment)
+        if prior_match is not None:
+            matched_prior.add(key)
+            entry["status"] = "carried over"
+            if entry.get("due") is None:
+                entry["due"] = prior_match.get("due")
+        else:
+            entry["status"] = "new"
+        if entry.get("due") is not None and entry["due"] < today:
+            entry["status"] = "overdue"
+        open_commitments.append(entry)
+    for candidate in prior:
+        key = _norm_commitment_text(candidate["text"])
+        if key in matched_prior:
+            continue
+        evidence = _commitment_kept(candidate["text"], material)
+        if evidence:
+            closed.append({**candidate, "kept_evidence": evidence})
+            continue
+        entry = dict(candidate)
+        entry["status"] = "carried over"
+        if entry.get("due") is not None and entry["due"] < today:
+            entry["status"] = "overdue"
+        open_commitments.append(entry)
+    order = {"overdue": 0, "carried over": 1, "new": 2}
+    open_commitments.sort(
+        key=lambda c: (
+            order.get(c["status"], 3),
+            c.get("due") or _date.max,
+            _norm_commitment_text(c["text"]),
+        )
+    )
+    return open_commitments, closed
+
+
+def _latest_call(results: dict, job: dict) -> dict:
+    """The call this recap is about: the job's call_id / recording_id
+    when named, else the latest Gong call or Zoom recording by start
+    date. All fields blank when no call or recording was found: a
+    named gap, never a guess."""
+    call: dict = {
+        "title": "",
+        "date": None,
+        "started": "",
+        "duration_seconds": None,
+        "participants": [],
+        "gong_call_id": str(job.get("call_id", "") or "").strip(),
+        "zoom_recording_id": str(job.get("recording_id", "") or "").strip(),
+    }
+    candidates: list[dict] = []
+    gong_calls = (results.get("gong_list_calls") or {}).get("calls") or []
+    for entry in gong_calls:
+        if not isinstance(entry, dict):
+            continue
+        candidates.append(
+            {
+                "title": str(entry.get("title", "") or "").strip(),
+                "date": _parse_iso_date(entry.get("started")),
+                "started": str(entry.get("started", "") or ""),
+                "duration_seconds": entry.get("duration_seconds"),
+                "participants": entry.get("participants") or [],
+                "gong_call_id": str(entry.get("id", "") or ""),
+                "zoom_recording_id": "",
+            }
+        )
+    zoom_recs = (results.get("zoom_list_recordings") or {}).get("recordings") or []
+    for entry in zoom_recs:
+        if not isinstance(entry, dict):
+            continue
+        candidates.append(
+            {
+                "title": str(entry.get("topic", "") or "").strip(),
+                "date": _parse_iso_date(entry.get("start_time")),
+                "started": str(entry.get("start_time", "") or ""),
+                "duration_seconds": entry.get("duration"),
+                "participants": [str(entry.get("host", "") or "")]
+                if entry.get("host")
+                else [],
+                "gong_call_id": "",
+                "zoom_recording_id": str(entry.get("id", "") or ""),
+            }
+        )
+    if call["gong_call_id"] or call["zoom_recording_id"]:
+        selected = None
+        for candidate in candidates:
+            if call["gong_call_id"] and candidate["gong_call_id"] == call["gong_call_id"]:
+                selected = candidate
+                break
+            if call["zoom_recording_id"] and candidate["zoom_recording_id"] == call["zoom_recording_id"]:
+                selected = candidate
+                break
+        if selected is None:
+            # Named id not in the lists: keep the ids, no title or date.
+            return call
+        # The same call usually appears in both systems: carry both ids.
+        for candidate in candidates:
+            if (
+                candidate["date"] == selected["date"]
+                and candidate["title"] == selected["title"]
+            ):
+                selected["gong_call_id"] = (
+                    selected["gong_call_id"] or candidate["gong_call_id"]
+                )
+                selected["zoom_recording_id"] = (
+                    selected["zoom_recording_id"] or candidate["zoom_recording_id"]
+                )
+        return selected
+    dated = [c for c in candidates if c["date"] is not None]
+    if not dated:
+        return call
+    dated.sort(key=lambda c: c["date"], reverse=True)
+    latest = dated[0]
+    # The same call usually appears in both systems: carry both ids.
+    for candidate in candidates:
+        if (
+            candidate["date"] == latest["date"]
+            and candidate["title"] == latest["title"]
+        ):
+            latest["gong_call_id"] = (
+                latest["gong_call_id"] or candidate["gong_call_id"]
+            )
+            latest["zoom_recording_id"] = (
+                latest["zoom_recording_id"] or candidate["zoom_recording_id"]
+            )
+    return latest
+
+
+def _extract_commitments(results: dict, call: dict, call_date=None) -> list[dict]:
+    """This call's commitments, harness-computed from the structured
+    material only: Zoom action items for the selected recording, Gong
+    key points phrased as an action, and transcript excerpts from the
+    selected call with a first-person promise. A candidate without a
+    source excerpt is dropped, never drafted."""
+    commitments: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(entry):
+        if entry is None:
+            return
+        key = _norm_commitment_text(entry["text"])
+        if not key or key in seen:
+            return
+        seen.add(key)
+        commitments.append(entry)
+
+    zoom_summary = results.get("zoom_get_recording_summary") or {}
+    zoom_title = zoom_summary.get("title") or call.get("title") or "call"
+    for item in zoom_summary.get("action_items") or []:
+        _add(
+            _commitment_from_action_item(
+                item,
+                'Zoom recording "%s" (action item)' % zoom_title,
+                call_date,
+            )
+        )
+    gong_summary = results.get("gong_get_call_summary") or {}
+    gong_title = gong_summary.get("title") or call.get("title") or "call"
+    for point in gong_summary.get("key_points") or []:
+        text = " ".join(str(point or "").split()).strip()
+        if not text or not _extract_owner(text):
+            continue
+        _add(
+            _commitment_from_action_item(
+                text,
+                'Gong call "%s" (key point)' % gong_title,
+                call_date,
+            )
+        )
+    gong_id = call.get("gong_call_id") or ""
+    zoom_id = call.get("zoom_recording_id") or ""
+    for match in (results.get("gong_search_transcripts") or {}).get("matches") or []:
+        if gong_id and match.get("call_id") and match.get("call_id") != gong_id:
+            continue
+        source = 'Gong call "%s" @ %s (%s)' % (
+            match.get("title", "call"),
+            match.get("timestamp", ""),
+            match.get("speaker", "unknown"),
+        )
+        for entry in _extract_commitments_from_text(
+            match.get("excerpt", ""), match.get("speaker", ""), source, call_date
+        ):
+            _add(entry)
+    for match in (results.get("zoom_search_transcripts") or {}).get("matches") or []:
+        if zoom_id and match.get("recording_id") and match.get("recording_id") != zoom_id:
+            continue
+        source = 'Zoom recording "%s" @ %s (%s)' % (
+            match.get("title", "call"),
+            match.get("timestamp", ""),
+            match.get("speaker", "unknown"),
+        )
+        for entry in _extract_commitments_from_text(
+            match.get("excerpt", ""), match.get("speaker", ""), source, call_date
+        ):
+            _add(entry)
+    return commitments
+
+
+def _format_commitment_line(commitment: dict, index: int) -> str:
+    """One commitment as a single parseable line: wording, owner, due
+    date, status, source. The same format _parse_commitment_line reads
+    back out of a prior draft."""
+    owner = commitment.get("owner") or "no owner named"
+    due = commitment.get("due")
+    due_text = due.isoformat() if due is not None else "no date given"
+    return (
+        '%d. "%s" — owner: %s; due: %s; status: %s; source: %s.'
+        % (
+            index,
+            commitment["text"],
+            owner,
+            due_text,
+            commitment.get("status", "new"),
+            commitment.get("source", "call material"),
+        )
+    )
+
+
+def _call_recap_block(call, commitments, closed, gaps) -> str:
+    """The harness-written recap block appended to the draft: the call,
+    the commitments table (wording, owner, due date, status, source),
+    what closed since the last recap, the ownerless commitments, and
+    the gaps. A commitment without a source excerpt never appears
+    here; an ownerless commitment is flagged, never assigned."""
+    lines = ["call recap (harness):"]
+    title = call.get("title") or "none found"
+    date = call.get("date")
+    date_text = date.isoformat() if date is not None else "date unknown"
+    duration = call.get("duration_seconds")
+    if duration:
+        duration_text = "%d min" % (int(duration) // 60)
+    else:
+        duration_text = "duration unknown"
+    participants = [p for p in (call.get("participants") or []) if p]
+    lines.append(
+        "call: %s — %s, %s, participants: %s."
+        % (
+            title,
+            date_text,
+            duration_text,
+            ", ".join(participants) if participants else "unknown",
+        )
+    )
+    lines.append("commitments:")
+    if commitments:
+        for index, commitment in enumerate(commitments, 1):
+            lines.append(_format_commitment_line(commitment, index))
+    else:
+        lines.append("No commitments found in this call's material.")
+    lines.append("closed since last recap:")
+    if closed:
+        for entry in closed:
+            lines.append(
+                '- "%s" — kept. Evidence: "%s"'
+                % (entry["text"], entry.get("kept_evidence", ""))
+            )
+    else:
+        lines.append("none.")
+    ownerless = [c for c in commitments if not c.get("owner")]
+    lines.append("ownerless commitments:")
+    if ownerless:
+        for entry in ownerless:
+            lines.append(
+                '- "%s" — no owner named; needs an owner before the next call.'
+                % entry["text"]
+            )
+    else:
+        lines.append("none.")
+    lines.append("gaps:")
+    if gaps:
+        for gap in gaps:
+            lines.append("- " + gap)
+    else:
+        lines.append("none.")
+    return "\n".join(lines)
+
+
+class CallRecapAndCommitmentsAgent(Agent):
+    """Tracks what was promised on calls and who owns it.
+
+    Gathers: the latest Gong call and Zoom recording for the account,
+    their generated summaries, transcript excerpts, the follow-up
+    email thread, and open cases and tickets raised on the call. Reads
+    prior call-recap drafts and memory for this account, so an old
+    commitment is checked against the new material instead of
+    re-listed blind. Drafts: a short recap (discussed, decided, left
+    open) plus a harness-written commitments table: each commitment
+    with its wording, owner, due date, and status (new, carried over,
+    overdue).
+
+    Commitments are harness-computed, never model prose: Zoom action
+    items, Gong key points phrased as an action, and transcript
+    sentences with a first-person promise. A commitment without a
+    source excerpt is dropped, never drafted. An ownerless commitment
+    is flagged, never assigned by guess. A prior commitment the new
+    material shows as done is closed since the last recap, with the
+    evidence sentence; one still open is carried over. A due date in
+    the past is overdue. The job may name a call_id (Gong) or a
+    recording_id (Zoom) to recap that call instead of the latest one.
+    """
+
+    name = "call-recap-and-commitments"
+    display_name = "Call Recap"
+    description = (
+        "Tracks what was promised on calls and who owns it: a short "
+        "recap plus a commitments table with owner, due date, and "
+        "status (new, carried over, overdue)."
+    )
+    keywords = [
+        "call recap",
+        "call-recap",
+        "call summary",
+        "recap the call",
+        "call commitments",
+        "commitments",
+        "commitment",
+        "what was promised",
+        "promised on the call",
+        "action items",
+        "call notes",
+        "transcript",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Names the call",
+            keywords=["call:"],
+        ),
+        ProofItem(
+            "Lists commitments with owner, due date, and status",
+            keywords=["commitments:"],
+        ),
+        ProofItem(
+            "Names closed commitments since the last recap",
+            keywords=["closed since last recap:"],
+        ),
+        ProofItem(
+            "Flags ownerless commitments",
+            keywords=["ownerless commitments:"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        from datetime import date as _date
+
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _CALL_RECAP_SOURCE_AGENTS
+        )
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("gong_list_calls", {"account": account, "days": 30}),
+            ("zoom_list_recordings", {"account": account, "days": 30}),
+            ("gong_search_transcripts", {"query": account, "limit": 5}),
+            ("zoom_search_transcripts", {"query": account, "limit": 5}),
+            ("gmail_search_messages", {"query": account, "limit": 5}),
+            ("salesforce_list_cases", {"account": account}),
+            ("zendesk_list_tickets", {"organization": account}),
+        ]
+        context, sources, links, results = _gather_with_results(
+            registry, calls, budget, job=job
+        )
+        call = _latest_call(results, job)
+        # Phase 2: the generated summary for the selected call. The
+        # summary carries the action items the commitments come from.
+        phase2 = []
+        gong_id = call.get("gong_call_id") or ""
+        zoom_id = call.get("zoom_recording_id") or ""
+        if gong_id:
+            phase2.append(("gong_get_call_summary", {"call_id": gong_id}))
+        if zoom_id:
+            phase2.append(
+                ("zoom_get_recording_summary", {"recording_id": zoom_id})
+            )
+        if phase2:
+            context2, sources2, links2, results2 = _gather_with_results(
+                registry, phase2, budget
+            )
+            context.update(context2)
+            sources.extend(s for s in sources2 if s not in sources)
+            seen_urls = {link.get("url") for link in links}
+            for link in links2:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            results.update(results2)
+        if not call.get("title"):
+            for key in ("gong_get_call_summary", "zoom_get_recording_summary"):
+                title = (results.get(key) or {}).get("title")
+                if title:
+                    call["title"] = title
+                    break
+        if composed_text:
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        call_date = call.get("date")
+        today = _date.today()
+        material = " ".join(str(value) for value in context.values())
+        prior = _prior_commitments(job, account)
+        new_commitments = _extract_commitments(results, call, call_date)
+        open_commitments, closed = _status_commitments(
+            new_commitments, prior, material, today
+        )
+        gaps: list[str] = []
+        if not call.get("title"):
+            gaps.append(
+                "No calls or recordings found for this account in the "
+                "last 30 days: supply a call_id or recording_id in the "
+                "job, or check the Gong/Zoom connection."
+            )
+        elif not (
+            results.get("gong_get_call_summary")
+            or results.get("zoom_get_recording_summary")
+        ):
+            gaps.append(
+                "No generated summary available for the selected call: "
+                "the recap is built from transcript excerpts and the "
+                "follow-up thread only."
+            )
+        if not (results.get("gong_search_transcripts") or {}).get(
+            "matches"
+        ) and not (results.get("zoom_search_transcripts") or {}).get(
+            "matches"
+        ):
+            gaps.append("No transcript excerpts matched this account.")
+        if not open_commitments and not closed:
+            gaps.append("No commitments found in this call's material.")
+        if not (results.get("gmail_search_messages") or {}).get("matches"):
+            gaps.append("No follow-up email thread found for this account.")
+        block = _call_recap_block(call, open_commitments, closed, gaps)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a call recap for account %r (call: %s). Cover: what "
+            "was discussed, what was decided, and what was left open. "
+            "Use only the context below. Never invent a commitment, an "
+            "owner, or a due date the context does not support; say "
+            "unknown where the records do not say. The harness appends "
+            "the commitments table."
+            % (account, call.get("title") or "no call found"),
+        )
+        system = (
+            "You are the call recap agent for a customer success team. "
+            "You recap the call and track what was promised, so nothing "
+            "dies in a transcript. Name what was discussed, decided, "
+            "and left open, and do not invent a promise, an owner, or "
+            "a date the context does not show."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + block
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -6861,7 +7650,7 @@ class CaseTriageAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All eighteen agents, keyed by name. All implemented."""
+    """All nineteen agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -6881,6 +7670,7 @@ def build_agents() -> dict[str, Agent]:
         "champion-change": ChampionChangeAgent(),
         "handoff": HandoffAgent(),
         "adoption-gaps": AdoptionGapsAgent(),
+        "call-recap-and-commitments": CallRecapAndCommitmentsAgent(),
     }
     return agents
 

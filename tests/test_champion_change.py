@@ -128,8 +128,8 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 
 class TestChampionChangeRegistered(unittest.TestCase):
-    def test_eighteen_agents_registered(self):
-        self.assertEqual(len(AGENTS), 18)
+    def test_nineteen_agents_registered(self):
+        self.assertEqual(len(AGENTS), 19)
         agent = AGENTS["champion-change"]
         self.assertTrue(agent.implemented)
         self.assertEqual(agent.name, "champion-change")

@@ -98,8 +98,8 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 
 class TestAdoptionGapsRegistered(unittest.TestCase):
-    def test_eighteen_agents_registered(self):
-        self.assertEqual(len(AGENTS), 18)
+    def test_nineteen_agents_registered(self):
+        self.assertEqual(len(AGENTS), 19)
         implemented = [n for n, a in AGENTS.items() if a.implemented]
         self.assertEqual(
             sorted(implemented),
@@ -107,6 +107,7 @@ class TestAdoptionGapsRegistered(unittest.TestCase):
                 "adoption-gaps",
                 "advocate-finder",
                 "briefer",
+                "call-recap-and-commitments",
                 "case-triage",
                 "champion-change",
                 "competitive-defense",
