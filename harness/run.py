@@ -336,6 +336,9 @@ def execute_job(config: Config, job: dict):
         "competitive-defense",
         "stakeholder-mapper",
         "case-triage",
+        "champion-change",
+        "handoff",
+        "adoption-gaps",
         "call-recap-and-commitments",
     ):
         # Value-finder and qbr-builder read prior drafts from the
@@ -344,8 +347,10 @@ def execute_job(config: Config, job: dict):
         # context on what needs updating; risk-watcher,
         # escalation-manager, competitive-defense,
         # stakeholder-mapper, and case-triage compose from them;
-        # call-recap-and-commitments reads its own prior recaps to
-        # check whether an old commitment was kept or is still open.
+        # champion-change, handoff, and adoption-gaps compose from
+        # prior drafts; call-recap-and-commitments reads its own
+        # prior recaps to check whether an old commitment was kept
+        # or is still open.
         # The queue path travels with the job.
         job.setdefault("approvals_file", config.approvals_file)
     if route.agent == "escalation-manager":
