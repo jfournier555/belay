@@ -25,6 +25,12 @@
 #            Belay-<ver>-x86_64.AppImage (double-click to run).
 # The AUR PKGBUILD lives in packaging/aur/: AUR builds happen on the
 # user's Arch machine, not in this workflow.
+#
+# The release notes lead with a plain-language "Get Belay" section
+# (packaging/release-notes.md, rendered with the release version) so
+# a non-technical reader can tell which file to download; the
+# auto-generated changelog follows it (the action prepends `body` to
+# the generated notes).
 name: Release
 
 on:
@@ -159,10 +165,19 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
+      - name: Render release notes
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          sed "s/{version}/$VERSION/g" packaging/release-notes.md > release-notes.md
+          if grep -q '{version}' release-notes.md; then
+            echo "release notes still contain {version} after rendering" >&2
+            exit 1
+          fi
       - uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -172,4 +187,5 @@ jobs:
             artifacts/Belay-Setup-*.exe
             artifacts/belay_*_amd64.deb
             artifacts/Belay-*-x86_64.AppImage
+          body_path: release-notes.md
           generate_release_notes: true

@@ -133,6 +133,27 @@ class TestReleaseWorkflow(unittest.TestCase):
         self.assertIn("build-appimage.sh", runs)
         self.assertIn("appimagetool", runs)
 
+    def test_release_job_renders_plain_language_notes(self):
+        # 0.18.5: the release notes lead with a "Get Belay" section
+        # rendered from the template, and the action prepends it to
+        # the auto-generated changelog (per the action's docs, a
+        # supplied body is pre-pended to the generated notes).
+        workflow = self._workflow()
+        release = workflow["jobs"]["release"]
+        steps = release["steps"]
+        uses = [str(step.get("uses", "")) for step in steps]
+        # The release job needs the template, so it checks out.
+        self.assertIn("actions/checkout@v4", uses)
+        runs = "\n".join(str(step.get("run", "")) for step in steps)
+        self.assertIn("packaging/release-notes.md", runs)
+        self.assertIn("s/{version}/", runs)
+        self.assertIn("> release-notes.md", runs)
+        for step in steps:
+            if "softprops/action-gh-release" in str(step.get("uses", "")):
+                with_ = step.get("with", {})
+                self.assertEqual(with_.get("body_path"), "release-notes.md")
+                self.assertTrue(with_.get("generate_release_notes"))
+
 
 PACKAGING = os.path.join(REPO, "packaging")
 ISS = os.path.join(PACKAGING, "windows", "belay.iss")
@@ -144,6 +165,7 @@ PKGBUILD = os.path.join(PACKAGING, "aur", "PKGBUILD")
 SRCINFO = os.path.join(PACKAGING, "aur", ".SRCINFO")
 INSTALL_SH = os.path.join(PACKAGING, "install.sh")
 INSTALL_PS1 = os.path.join(PACKAGING, "install.ps1")
+RELEASE_NOTES = os.path.join(PACKAGING, "release-notes.md")
 
 FAKE_UNAME = """#!/bin/sh
 # Fake uname for install tests: values from FAKE_UNAME_S / FAKE_UNAME_M.
@@ -390,6 +412,41 @@ class InstallPs1Test(unittest.TestCase):
             self.assertIn(needle, text)
         self.assertEqual(text.count("{"), text.count("}"))
         self.assertEqual(text.count("("), text.count(")"))
+
+
+class ReleaseNotesTest(unittest.TestCase):
+    def _rendered(self, version="0.18.5"):
+        # Render exactly the way the release workflow does: sed
+        # substituting {version} from the tag.
+        result = subprocess.run(
+            ["sed", "s/{version}/%s/g" % version, RELEASE_NOTES],
+            capture_output=True, text=True, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_template_renders_with_version(self):
+        # 0.18.5: the "Get Belay" section names every download in
+        # plain language, with the release version in the filenames.
+        rendered = self._rendered("0.18.5")
+        for needle in (
+            "## Get Belay",
+            "**Windows** — double-click **Belay-Setup-0.18.5.exe**",
+            "**Mac** — open **Belay-macos.dmg**",
+            "**Linux, Ubuntu/Debian** — double-click **belay_0.18.5_amd64.deb**",
+            "**Linux, any distro** — double-click **Belay-0.18.5-x86_64.AppImage**",
+            "**Terminal only (advanced)** — belay.exe (Windows) or belay-linux (Linux)",
+        ):
+            self.assertIn(needle, rendered)
+        self.assertNotIn("{version}", rendered)
+
+    def test_template_has_version_placeholders(self):
+        # The template must not hardcode a release: every versioned
+        # filename carries the {version} placeholder the workflow
+        # substitutes from the tag.
+        text = read(RELEASE_NOTES)
+        self.assertIn("{version}", text)
+        self.assertNotIn("0.18", text)
 
 
 if __name__ == "__main__":
