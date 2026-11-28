@@ -9,7 +9,7 @@
 # harness/assets/belay-icon.png). The binary hash is SKIP here because
 # it is not known until the release binary exists; pin it on the bump.
 pkgname=belay
-pkgver=0.18.3
+pkgver=0.18.4
 pkgrel=1
 pkgdesc="Post-sales AI harness: routing, tools, memory and approvals around the model"
 arch=('x86_64')
