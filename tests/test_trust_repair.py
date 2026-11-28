@@ -147,7 +147,7 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 class TestTrustRepairRegistered(unittest.TestCase):
     def test_twenty_agents_registered(self):
-        self.assertEqual(len(AGENTS), 20)
+        self.assertEqual(len(AGENTS), 21)
         implemented = [n for n, a in AGENTS.items() if a.implemented]
         self.assertEqual(
             sorted(implemented),
@@ -159,6 +159,7 @@ class TestTrustRepairRegistered(unittest.TestCase):
                 "case-triage",
                 "champion-change",
                 "competitive-defense",
+                "ebr-prep",
                 "escalation-manager",
                 "expansion-spotter",
                 "handoff",

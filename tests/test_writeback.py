@@ -420,7 +420,7 @@ class TestUpdaterAgent(unittest.TestCase):
         self.assertIn("not understood", draft.text)
 
     def test_updater_is_registered(self):
-        self.assertEqual(len(AGENTS), 20)
+        self.assertEqual(len(AGENTS), 21)
         self.assertIn("salesforce-updater", AGENTS)
 
 

@@ -107,7 +107,7 @@ class TestAgentStates(unittest.TestCase):
 
     def test_twenty_agents_including_value_finder(self):
         states = agent_states(self.queue)
-        self.assertEqual(len(states), 20)
+        self.assertEqual(len(states), 21)
         names = [s["name"] for s in states]
         self.assertIn("value-finder", names)
         self.assertIn("salesforce-updater", names)
@@ -117,6 +117,7 @@ class TestAgentStates(unittest.TestCase):
         self.assertIn("champion-change", names)
         self.assertIn("handoff", names)
         self.assertIn("trust-repair", names)
+        self.assertIn("ebr-prep", names)
         finder = [s for s in states if s["name"] == "value-finder"][0]
         self.assertEqual(finder["status"], "implemented")
         self.assertEqual(finder["drafts"], 0)
@@ -214,7 +215,7 @@ class TestDashboardApp(unittest.TestCase):
         state = res.json()
         self.assertEqual(state["stats"]["drafts_ready"], 3)
         self.assertEqual(state["stats"]["accounts_watched"], 2)
-        self.assertEqual(len(state["agents"]), 20)
+        self.assertEqual(len(state["agents"]), 21)
         self.assertEqual(len(state["queue"]), 3)
         first = state["queue"][0]
         # Links ride along in the state; no aggregate proof score does.

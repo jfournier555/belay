@@ -1,13 +1,13 @@
-"""The specialist agents: the twenty post-sales jobs the harness covers.
+"""The specialist agents: the twenty-one post-sales jobs the harness covers.
 
-The twenty jobs are the post-sales jobs that matter: scout, briefer,
+The twenty-one jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
 risk-watcher, escalation-manager, competitive-defense,
 stakeholder-mapper, case-triage, champion-change, handoff,
-adoption-gaps, call-recap-and-commitments, and trust-repair.
+adoption-gaps, call-recap-and-commitments, trust-repair, and ebr-prep.
 
-V1 implements twenty end to end:
+V1 implements twenty-one end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -126,8 +126,18 @@ V1 implements twenty end to end:
   does not, the step says so instead of inventing one. With no incident
   named anywhere the draft names the gap, never a recovery for a failure
   that did not happen.
+- ebr-prep: prepares an executive business review for a specific
+  executive meeting, distinct from qbr-builder's quarterly cadence
+  deck: it leads with outcomes and value delivered, not activity, and
+  ends with an ask (a renewal, an expansion, or a decision the
+  executives must make). The executive summary, the value figures,
+  the risks and their mitigations, the ask, the executive audience,
+  and the last review's goals are harness-computed; every number
+  carries a source, and a missing number is named as a gap. Where the
+  last review's goals are not on record the draft says so instead of
+  inventing them.
 
-All twenty are implemented. Every job in the harness has a working agent.
+All twenty-one are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -1302,8 +1312,6 @@ class QBRBuilderAgent(Agent):
         "qbr",
         "business review",
         "quarterly",
-        "ebr",
-        "executive review",
     ]
     proof_checklist = [
         ProofItem(
@@ -7104,6 +7112,618 @@ class TrustRepairAgent(Agent):
         )
 
 
+# The nine agents whose drafts ebr-prep composes from: the prior
+# review and brief, the value and expansion picture, the risks and
+# recovery, the adoption gaps, the relationship map, and the open
+# commitments.
+_EBR_PREP_SOURCE_AGENTS = (
+    "qbr-builder",
+    "briefer",
+    "value-finder",
+    "expansion-spotter",
+    "risk-watcher",
+    "adoption-gaps",
+    "trust-repair",
+    "stakeholder-mapper",
+    "call-recap-and-commitments",
+)
+
+# Words that mark a contact or a named person as an executive, for
+# the EBR audience. Matched case-insensitively against a title or a
+# role; a name with no title is not an executive.
+_EXEC_TITLE_TOKENS = (
+    "chief",
+    "vp",
+    "vice president",
+    "director",
+    "head of",
+    "president",
+    "cfo",
+    "ceo",
+    "cto",
+    "coo",
+    "ciso",
+    "cmo",
+    "general manager",
+    "executive",
+)
+
+
+def _ebr_ask(job, account_record, opportunities, signals, today=None):
+    """The ask for the EBR, harness-computed.
+
+    Order: an ask the job names, then a renewal closing within 90
+    days, then an open expansion opportunity, then a high-severity
+    risk signal needing a decision. None of those is a missing ask
+    hidden as a small one: kind "none" with the gap stated.
+    """
+    named = str(job.get("ask", "") or "").strip()
+    if named:
+        return {
+            "kind": "named",
+            "text": named,
+            "evidence": "Named in the job.",
+        }
+    if today is None:
+        from datetime import date as _date
+
+        today = _date.today()
+    opps = (opportunities or {}).get("opportunities", []) or []
+    renewal_date = (account_record or {}).get("renewal_date")
+    if renewal_date:
+        due = _parse_iso_date(str(renewal_date))
+        if due is not None and 0 <= (due - today).days <= 90:
+            amount = (account_record or {}).get("arr")
+            renewal_opp = next(
+                (
+                    opp
+                    for opp in opps
+                    if "renewal" in str(opp.get("type", "")).lower()
+                ),
+                None,
+            )
+            if renewal_opp is not None and isinstance(
+                renewal_opp.get("amount"), (int, float)
+            ):
+                amount = renewal_opp["amount"]
+            amount_text = (
+                format_money(amount)
+                if isinstance(amount, (int, float))
+                else "amount not on record"
+            )
+            return {
+                "kind": "renewal",
+                "text": (
+                    "Ask the executives to confirm the renewal on %s "
+                    "(%s) and name the signer."
+                    % (due.isoformat(), amount_text)
+                ),
+                "evidence": "Renewal date %s in the account record."
+                % due.isoformat(),
+            }
+    expansion = [
+        opp
+        for opp in opps
+        if "expansion" in str(opp.get("type", "")).lower()
+        and str(opp.get("stage", "")).lower()
+        not in ("closed won", "closed lost")
+    ]
+    if expansion:
+        opp = expansion[0]
+        amount = opp.get("amount")
+        amount_text = (
+            format_money(amount)
+            if isinstance(amount, (int, float))
+            else "amount not on record"
+        )
+        return {
+            "kind": "expansion",
+            "text": (
+                "Ask the executives to approve the %s expansion (%s) "
+                "and name the sponsor."
+                % (opp.get("name", "open"), amount_text)
+            ),
+            "evidence": "Open expansion opportunity %s in the gathered records."
+            % opp.get("name", "unnamed"),
+        }
+    high = [s for s in (signals or []) if s.get("severity") == "high"]
+    if high:
+        return {
+            "kind": "decision",
+            "text": "Ask the executives to decide on: %s"
+            % high[0].get("text", "the open high-severity signal"),
+            "evidence": "High-severity risk signal in the gathered records.",
+        }
+    return {
+        "kind": "none",
+        "text": "",
+        "evidence": (
+            "No ask named: no renewal within 90 days, no open "
+            "expansion opportunity, and no high-severity signal "
+            "needing a decision. Name the ask in the job."
+        ),
+    }
+
+
+def _ebr_audience(job, account_record, account):
+    """The executive audience for the EBR: who is in the room.
+
+    The job names attendees first, then the account record contacts
+    with executive titles, then lines in the latest prior
+    stakeholder-mapper draft that name an executive. Returns
+    (people, gaps): people are {"name", "title", "evidence"} dicts,
+    deduped by name; a room with nobody named is a gap, not a guess.
+    """
+    people: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(name, title, evidence):
+        key = str(name or "").strip().lower()
+        if not key or key in seen:
+            return
+        seen.add(key)
+        people.append(
+            {
+                "name": str(name).strip(),
+                "title": str(title or "").strip(),
+                "evidence": evidence,
+            }
+        )
+
+    audience = job.get("audience")
+    if isinstance(audience, str) and audience.strip():
+        for part in audience.split(","):
+            _add(part.strip(), "", "Named in the job.")
+    elif isinstance(audience, (list, tuple)):
+        for part in audience:
+            if isinstance(part, dict):
+                _add(
+                    part.get("name"),
+                    part.get("title") or part.get("role"),
+                    "Named in the job.",
+                )
+            else:
+                _add(str(part), "", "Named in the job.")
+    for contact in (account_record or {}).get("contacts", []) or []:
+        if not isinstance(contact, dict):
+            continue
+        title = str(contact.get("title") or contact.get("role") or "")
+        if title and any(tok in title.lower() for tok in _EXEC_TITLE_TOKENS):
+            _add(contact.get("name"), title, "Account record contact.")
+    for item in _load_prior_items(job, account, ("stakeholder-mapper",)):
+        for line in str(item.draft or "").splitlines():
+            lowered = line.lower()
+            if not any(tok in lowered for tok in _EXEC_TITLE_TOKENS):
+                continue
+            text = " ".join(line.split()).lstrip("- ").strip()
+            name = text.split(":", 1)[0].strip()
+            title = ""
+            if ":" in text:
+                title = text.split(":", 1)[1].strip()
+                if len(title) > 80:
+                    title = title[:80] + " ..."
+            _add(name, title, "Named in the stakeholder-mapper draft.")
+        if people:
+            break
+    gaps: list[str] = []
+    if not people:
+        gaps.append(
+            "No executive audience named: supply the attendees in "
+            "the job (audience), or name them in the account record."
+        )
+    return people, gaps
+
+
+def _ebr_last_review_goals(job, account):
+    """Goals set at the last review, quoted from the latest prior QBR
+    draft. Lines naming next quarter or a goal, up to three. Empty
+    when no prior QBR draft names any: the draft says so instead of
+    inventing the last review's goals."""
+    items = _load_prior_items(job, account, ("qbr-builder",))
+    goals: list[str] = []
+    for item in items:
+        for line in str(item.draft or "").splitlines():
+            lowered = line.lower()
+            if "next quarter" in lowered or "goal" in lowered:
+                text = " ".join(line.split())
+                if text and text not in goals:
+                    goals.append(text)
+        if goals:
+            break
+    return goals[:3]
+
+
+def _ebr_mitigation(signal):
+    """The mitigation for one risk signal, harness-written per kind."""
+    kind = signal.get("kind", "")
+    if kind == "support-delivery":
+        return (
+            "Get a named owner and a fix date, and a status update "
+            "the CSM can send the customer."
+        )
+    if kind in ("renewal-stalled", "renewal-closing"):
+        return (
+            "Confirm whether the renewal is still alive, who owns "
+            "the close, and the real close date."
+        )
+    if kind == "escalation-language":
+        return (
+            "Confirm who owns the escalation language and what the "
+            "next step is."
+        )
+    return "Confirm who owns this signal and what the next step is."
+
+
+def _ebr_adoption_expansion(composed_text, opportunities):
+    """Adoption gaps and expansion opportunities for the review.
+
+    The first lines of the composed adoption-gaps and
+    expansion-spotter drafts, plus every open expansion
+    opportunity in the gathered records. Empty when neither
+    source names any: the draft says so instead of inventing one.
+    """
+    lines: list[str] = []
+    for line in str(composed_text or "").splitlines():
+        if line.startswith("adoption-gaps (") or line.startswith(
+            "expansion-spotter ("
+        ):
+            text = line.split("): ", 1)[-1].strip()
+            if text:
+                lines.append(text[:200])
+    for opp in (opportunities or {}).get("opportunities", []) or []:
+        if "expansion" not in str(opp.get("type", "")).lower():
+            continue
+        if str(opp.get("stage", "")).lower() in (
+            "closed won",
+            "closed lost",
+        ):
+            continue
+        amount = opp.get("amount")
+        lines.append(
+            "Open expansion: %s (%s)."
+            % (
+                opp.get("name", "unnamed"),
+                format_money(amount)
+                if isinstance(amount, (int, float))
+                else "amount not on record",
+            )
+        )
+    return lines
+
+
+def _ebr_prep_block(
+    summary,
+    figures,
+    signals,
+    ask,
+    audience,
+    commitments,
+    missed,
+    goals,
+    adoption_expansion,
+    gaps,
+):
+    """The harness-written EBR block appended to the draft: the
+    executive summary, value delivered with numbers, risks and
+    mitigations, adoption and expansion, the ask, the executive
+    audience, open commitments, last review's goals, and the gaps.
+    Every number here is harness-computed; a missing number is a
+    named gap, never an invented figure."""
+    lines = ["executive business review (harness):"]
+    lines.append("executive summary: %s" % summary)
+    lines.append("value delivered:")
+    lines.extend("  " + line for line in figures.splitlines())
+    if signals:
+        lines.append("risks and mitigations:")
+        for signal in signals:
+            lines.append(
+                "  - [%s] %s Mitigation: %s"
+                % (
+                    signal.get("severity", "?"),
+                    signal.get("text", ""),
+                    _ebr_mitigation(signal),
+                )
+            )
+    else:
+        lines.append(
+            "risks and mitigations: no signals, a clean bill for this review."
+        )
+    if adoption_expansion:
+        lines.append("adoption and expansion:")
+        for item in adoption_expansion:
+            lines.append("  - %s" % item)
+    else:
+        lines.append("adoption and expansion: none on record.")
+    lines.append("the ask: %s" % (ask["text"] or ask["evidence"]))
+    if audience:
+        lines.append("executive audience:")
+        for person in audience:
+            title = " (%s)" % person["title"] if person["title"] else ""
+            lines.append(
+                "  - %s%s — %s" % (person["name"], title, person["evidence"])
+            )
+    else:
+        lines.append("executive audience: none named.")
+    missed_texts = {
+        _norm_commitment_text(c.get("text", "")) for c in (missed or [])
+    }
+    open_list = [
+        c
+        for c in (commitments or [])
+        if "closed" not in str(c.get("status", "") or "").lower()
+        and "done" not in str(c.get("status", "") or "").lower()
+        and _norm_commitment_text(c.get("text", "")) not in missed_texts
+    ]
+    if open_list or missed:
+        lines.append("open commitments:")
+        for i, commitment in enumerate(open_list, start=1):
+            lines.append("  " + _format_commitment_line(commitment, i))
+        for commitment in missed:
+            due = commitment.get("due")
+            due_text = due.isoformat() if due is not None else "no date given"
+            lines.append(
+                '  OVERDUE: "%s" — owner: %s; due: %s; source: %s.'
+                % (
+                    commitment.get("text", ""),
+                    commitment.get("owner") or "no owner named",
+                    due_text,
+                    commitment.get("source", "call material"),
+                )
+            )
+    else:
+        lines.append("open commitments: none on record.")
+    if goals:
+        lines.append("last review goals:")
+        for goal in goals:
+            lines.append("  - %s" % goal)
+    else:
+        lines.append(
+            "last review goals: none on record, the goals set at the "
+            "last review are not on file."
+        )
+    if gaps:
+        lines.append("gaps:")
+        for gap in gaps:
+            lines.append("  - %s" % gap)
+    return "\n".join(lines)
+
+
+class EBRPrepAgent(Agent):
+    """Prepares an executive business review for an account.
+
+    Distinct from qbr-builder: a QBR is the quarterly cadence deck,
+    an EBR is prepared for a specific executive meeting, leads with
+    outcomes and value (not activity), and ends with an ask: a
+    renewal, an expansion, or a decision the executives must make.
+    Gathers: the account record, open opportunities, open cases and
+    tickets, Linear issues, Gmail and Slack messages, Gong and Zoom
+    transcripts. Composes from prior qbr-builder, briefer,
+    value-finder, expansion-spotter, risk-watcher, adoption-gaps,
+    trust-repair, stakeholder-mapper, and call-recap-and-commitments
+    drafts when they exist; gathers directly otherwise.
+
+    The executive summary, the value figures, the risks and their
+    mitigations, the ask, the executive audience, and the last
+    review's goals are harness-computed, never model prose. Every
+    number carries a source, and a missing number is named as a gap:
+    where the last review's goals are not on record the draft says
+    so instead of inventing them.
+    """
+
+    name = "ebr-prep"
+    display_name = "EBR Prep"
+    description = (
+        "Prepares an executive business review: outcomes and value "
+        "delivered, risks and mitigations, adoption and expansion, "
+        "and the ask the executives must decide."
+    )
+    keywords = [
+        "ebr",
+        "ebr-prep",
+        "ebr prep",
+        "executive business review",
+        "prepare an ebr",
+        "prepare the ebr",
+        "ebr for",
+        "business review",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Gives the executive summary",
+            keywords=["executive summary:"],
+        ),
+        ProofItem(
+            "Covers value delivered with numbers",
+            keywords=["value delivered:"],
+        ),
+        ProofItem(
+            "Covers risks and mitigations",
+            keywords=["risks and mitigations:"],
+        ),
+        ProofItem(
+            "Ends with the ask",
+            keywords=["the ask:"],
+        ),
+        ProofItem(
+            "Names the executive audience",
+            keywords=["executive audience:"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        from datetime import date as _date
+
+        account = _extract_account(job)
+        today = _date.today()
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _EBR_PREP_SOURCE_AGENTS
+        )
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("zendesk_list_tickets", {"organization": account}),
+            ("linear_list_issues", {"account": account}),
+            ("gmail_search_messages", {"query": account, "limit": 5}),
+            ("gong_search_transcripts", {"query": account, "limit": 5}),
+            ("zoom_search_transcripts", {"query": account, "limit": 5}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources, links, results = _gather_with_results(
+            registry, calls, budget, job=job
+        )
+        account_record = results.get("salesforce_get_account") or {}
+        opportunities = results.get("salesforce_list_opportunities")
+        signals = _risk_signals(results, account, today)
+        hours_saved = job.get("hours_saved")
+        if hours_saved is not None:
+            try:
+                hours_saved = float(hours_saved)
+            except (TypeError, ValueError):
+                hours_saved = None
+        if hours_saved is not None and hours_saved <= 0:
+            hours_saved = None
+        hourly_rate = job.get("hourly_rate")
+        if hourly_rate is not None:
+            try:
+                hourly_rate = float(hourly_rate)
+            except (TypeError, ValueError):
+                hourly_rate = None
+        if hourly_rate is not None and hourly_rate <= 0:
+            hourly_rate = None
+        rate_source = job.get("hourly_rate_source") or "the job"
+        figures = _value_figures(
+            opportunities, hours_saved, hourly_rate, rate_source
+        )
+        ask = _ebr_ask(
+            job, account_record, opportunities, signals, today
+        )
+        audience, audience_gaps = _ebr_audience(
+            job, account_record, account
+        )
+        goals = _ebr_last_review_goals(job, account)
+        commitments = _prior_commitments(job, account)
+        missed = _missed_prior_commitments(job, account, today)
+        adoption_expansion = _ebr_adoption_expansion(
+            composed_text, opportunities
+        )
+        open_commitments = [
+            c
+            for c in commitments
+            if "closed" not in str(c.get("status", "") or "").lower()
+            and "done" not in str(c.get("status", "") or "").lower()
+        ]
+        gaps: list[str] = []
+        if ask["kind"] == "none":
+            gaps.append(ask["evidence"])
+        gaps.extend(audience_gaps)
+        if not goals:
+            gaps.append(
+                "No prior QBR draft on record: the goals set at the "
+                "last review are not on file."
+            )
+        if not adoption_expansion:
+            gaps.append(
+                "No adoption gaps or expansion opportunities on record."
+            )
+        if not commitments and not missed:
+            gaps.append("No prior commitments on record for this account.")
+        arr = account_record.get("arr")
+        summary = (
+            "%s: %s ARR, health %s, renewal %s, %d open risk signal(s), "
+            "%d open commitment(s)."
+            % (
+                account,
+                format_money(arr)
+                if isinstance(arr, (int, float))
+                else "ARR not on record",
+                account_record.get("health") or "unknown",
+                account_record.get("renewal_date") or "no renewal date",
+                len(signals),
+                len(open_commitments),
+            )
+        )
+        if composed_text:
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        block = _ebr_prep_block(
+            summary,
+            figures,
+            signals,
+            ask,
+            audience,
+            commitments,
+            missed,
+            goals,
+            adoption_expansion,
+            gaps,
+        )
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft an executive business review for account %r for a "
+            "specific executive meeting (not a quarterly cadence). "
+            "Lead with outcomes and value delivered, not activity. "
+            "Cover: the executive summary, value delivered with "
+            "numbers and sources, risks and mitigations, adoption and "
+            "expansion opportunities, and the ask. Use only the "
+            "context below. Never invent a number, an attendee, or a "
+            "goal the context does not support; say unknown where the "
+            "records do not say. The harness appends the review block."
+            % account,
+        )
+        system = (
+            "You are the EBR prep agent for a customer success team. "
+            "You draft executive business reviews: outcomes and value, "
+            "not activity, and every number must come from the context. "
+            "Do not invent a number, an attendee, or a goal the context "
+            "does not show."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + block
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -8206,7 +8826,7 @@ class CaseTriageAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All twenty agents, keyed by name. All implemented."""
+    """All twenty-one agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -8228,6 +8848,7 @@ def build_agents() -> dict[str, Agent]:
         "adoption-gaps": AdoptionGapsAgent(),
         "call-recap-and-commitments": CallRecapAndCommitmentsAgent(),
         "trust-repair": TrustRepairAgent(),
+        "ebr-prep": EBRPrepAgent(),
     }
     return agents
 
