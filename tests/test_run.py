@@ -69,7 +69,7 @@ class TestCli(unittest.TestCase):
         code, out = self._run(["agents"])
         self.assertEqual(code, 0)
         lines = [line for line in out.splitlines() if line.strip()]
-        self.assertEqual(len(lines), 21)
+        self.assertEqual(len(lines), 22)
         self.assertTrue(all("implemented" in line for line in lines))
 
     def test_tools_lists_all_connector_tools_in_stub(self):

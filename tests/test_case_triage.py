@@ -108,7 +108,7 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 class TestCaseTriageRegistered(unittest.TestCase):
     def test_twenty_agents_registered(self):
-        self.assertEqual(len(AGENTS), 21)
+        self.assertEqual(len(AGENTS), 22)
         agent = AGENTS["case-triage"]
         self.assertTrue(agent.implemented)
         self.assertEqual(agent.display_name, "Case Triage")

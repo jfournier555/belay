@@ -131,7 +131,7 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 class TestHandoffRegistered(unittest.TestCase):
     def test_twenty_agents_registered(self):
-        self.assertEqual(len(AGENTS), 21)
+        self.assertEqual(len(AGENTS), 22)
         agent = AGENTS["handoff"]
         self.assertTrue(agent.implemented)
         self.assertEqual(agent.name, "handoff")

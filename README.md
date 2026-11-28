@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v0.17.0**, 21 agents, 10 connectors, 910 tests green.
+**A post sales AI harness.** Current version: **v0.17.0**, 22 agents, 10 connectors, 963 tests green.
 
 ![Belay: AI that does the post-sales busywork. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -166,7 +166,7 @@ python -m harness.run run --text "draft a renewal plan for Acme Corp" --stub
 # HARNESS_LOADED_HOURLY_RATE in the environment.
 python -m harness.run run --agent value-finder --account "Acme Corp" --stub --hourly-rate 150 --hours-saved 10 --show
 
-# See the twenty-one agents and the registered tools.
+# See the twenty-two agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
 
@@ -204,7 +204,7 @@ Then run without `--stub`:
 python -m harness.run run --agent renewal-desk --account "Acme Corp"
 ```
 
-## The twenty-one agents
+## The twenty-two agents
 
 Each agent owns one job, not a schedule. Cadence is the scheduler
 (v1.4.0), a separate architecture piece.
@@ -232,6 +232,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | call-recap-and-commitments | implemented | Tracks what was promised on calls and who owns it: a short recap (discussed, decided, left open) plus a commitments table with owner, due date, and status (new, carried over, overdue). Commitments are harness-computed from Zoom action items, Gong key points phrased as an action, and transcript sentences with a first-person promise; a commitment without a source excerpt is dropped, never drafted, and an ownerless commitment is flagged, never assigned by guess. A prior commitment the new material shows as done is closed since the last recap. Composes from prior call-recap drafts when they exist; gathers directly otherwise. |
 | trust-repair | implemented | Recovers trust after an outage, a bad escalation, or a missed promise: the trust-hit summary with evidence, the impact on relationships and renewals, and a recovery plan (acknowledge and own it, fix it, the follow-up cadence, the proof the customer will see). The hit, the impact, and the plan are harness-computed; each step names an owner and a date where the evidence supports one, and says so where it does not. With no incident named anywhere the draft names the gap, never a recovery for a failure that did not happen. Composes from prior escalation-manager, risk-watcher, call-recap-and-commitments, and case-triage drafts when they exist; gathers directly otherwise. |
 | ebr-prep | implemented | Prepares an executive business review for a specific executive meeting, distinct from qbr-builder's quarterly cadence deck: outcomes and value delivered, not activity, and ends with an ask (a renewal, an expansion, or a decision the executives must make). The executive summary, the value figures, the risks and their mitigations, the ask, the executive audience, and the last review's goals are harness-computed; every number carries a source, and a missing number is named as a gap. Composes from prior qbr-builder, briefer, value-finder, expansion-spotter, risk-watcher, adoption-gaps, trust-repair, stakeholder-mapper, and call-recap-and-commitments drafts when they exist; gathers directly otherwise. |
+| churn-post-mortem | implemented | Documents why a churned account left and hands the record to sales for a future re-approach, not a CS win-back: the churn reason with evidence, what was lost, and the re-approach plan (when, who, what would have to change) with a do-not list for the SDR. The reason, the timing, and the contact are harness-computed; a reason is claimed only when evidence names it, the window comes from a named date, the replacement contract's renewal, or a cooling-off window counted from the closed-lost date (labeled proposed), and the contact is a successor, the departed champion at a named new company, or the account owner. With no evidence the draft names the gap instead of inventing a reason, a window, or a contact. Composes from prior risk-watcher, escalation-manager, champion-change, trust-repair, call-recap-and-commitments, adoption-gaps, renewal-desk, and briefer drafts when they exist; gathers directly otherwise. |
 
 ## Composition
 
@@ -490,7 +491,7 @@ files, all numbers from real harness state, nothing invented.
   what applied, op by op.
 - **MCP servers:** configured external servers; add and remove from
   here, and probe one to list its tools or see why it is unreachable.
-- **Agents:** the twenty-one agents, one line each, with last-run state.
+- **Agents:** the twenty-two agents, one line each, with last-run state.
 
 When a store is empty the view says so; a missing or corrupt store
 file renders as an empty view, never a crash. Everything is a draft
@@ -572,12 +573,12 @@ in-process connector tools.
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- All twenty-one agents, end to end, in stub mode: renewal desk, briefer,
+- All twenty-two agents, end to end, in stub mode: renewal desk, briefer,
   expansion spotter, onboarding guide, scout, qbr builder, advocate
   finder, voice of customer, value finder, Salesforce updater, risk
   watcher, escalation manager, competitive defense, stakeholder
-  mapper, case triage, champion change, handoff, adoption gaps, call recap and commitments, and
-  trust repair.
+  mapper, case triage, champion change, handoff, adoption gaps, call recap and commitments,
+  trust repair, ebr prep, and churn post-mortem.
 - Write-back: the updater agent drafts changes with a harness-computed
   dry-run preview; only an approved write draft executes, exactly once
   per change, and rejected drafts never execute; stub writes simulate

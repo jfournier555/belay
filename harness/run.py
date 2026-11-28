@@ -342,6 +342,7 @@ def execute_job(config: Config, job: dict):
         "call-recap-and-commitments",
         "trust-repair",
         "ebr-prep",
+        "churn-post-mortem",
     ):
         # Value-finder and qbr-builder read prior drafts from the
         # approval queue (value-finder synthesizes them, qbr-builder
@@ -355,7 +356,9 @@ def execute_job(config: Config, job: dict):
         # or is still open; trust-repair composes from prior drafts
         # and reads prior call-recap drafts for missed commitments;
         # ebr-prep composes from prior drafts and reads prior
-        # call-recap drafts for open commitments.
+        # call-recap drafts for open commitments; churn-post-mortem
+        # composes from prior drafts and reads prior call-recap drafts
+        # for missed commitments.
         # The queue path travels with the job.
         job.setdefault("approvals_file", config.approvals_file)
     if route.agent == "escalation-manager":
@@ -462,7 +465,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_agents(_args: argparse.Namespace) -> int:
-    """List the twenty-one agents and whether each is implemented in v1."""
+    """List the twenty-two agents and whether each is implemented in v1."""
     for name in sorted(AGENTS):
         agent = AGENTS[name]
         status = "implemented" if agent.implemented else "planned"
@@ -974,7 +977,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--no-memory", action="store_true", help="Run cold: do not load the account's memory as context.")
     run_p.set_defaults(func=cmd_run)
 
-    agents_p = sub.add_parser("agents", help="List the twenty-one agents.")
+    agents_p = sub.add_parser("agents", help="List the twenty-two agents.")
     agents_p.set_defaults(func=cmd_agents)
 
     tools_p = sub.add_parser("tools", help="List registered connector tools.")

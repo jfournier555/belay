@@ -1,13 +1,14 @@
-"""The specialist agents: the twenty-one post-sales jobs the harness covers.
+"""The specialist agents: the twenty-two post-sales jobs the harness covers.
 
-The twenty-one jobs are the post-sales jobs that matter: scout, briefer,
+The twenty-two jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
 risk-watcher, escalation-manager, competitive-defense,
 stakeholder-mapper, case-triage, champion-change, handoff,
-adoption-gaps, call-recap-and-commitments, trust-repair, and ebr-prep.
+adoption-gaps, call-recap-and-commitments, trust-repair, ebr-prep, and
+churn-post-mortem.
 
-V1 implements twenty-one end to end:
+V1 implements twenty-two end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -136,8 +137,18 @@ V1 implements twenty-one end to end:
   carries a source, and a missing number is named as a gap. Where the
   last review's goals are not on record the draft says so instead of
   inventing them.
+- churn-post-mortem: documents why a churned account left and hands
+  the record to sales for a future re-approach, not a CS win-back.
+  The churn reason, the re-approach timing, and the re-approach
+  contact are harness-computed: a reason is claimed only when
+  evidence names it, the window comes from a named date, the
+  replacement contract's renewal, or a cooling-off window counted
+  from the closed-lost date (labeled proposed), and the contact is a
+  successor, the departed champion at a named new company, or the
+  account owner. With no evidence the draft names the gap instead of
+  inventing a reason, a window, or a contact.
 
-All twenty-one are implemented. Every job in the harness has a working agent.
+All twenty-two are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -7571,7 +7582,7 @@ class EBRPrepAgent(Agent):
             ("salesforce_list_opportunities", {"account": account}),
             ("salesforce_list_cases", {"account": account}),
             ("zendesk_list_tickets", {"organization": account}),
-            ("linear_list_issues", {"account": account}),
+            ("linear_list_issues", {}),
             ("gmail_search_messages", {"query": account, "limit": 5}),
             ("gong_search_transcripts", {"query": account, "limit": 5}),
             ("zoom_search_transcripts", {"query": account, "limit": 5}),
@@ -7696,6 +7707,853 @@ class EBRPrepAgent(Agent):
             "not activity, and every number must come from the context. "
             "Do not invent a number, an attendee, or a goal the context "
             "does not show."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + block
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
+# The eight agents whose drafts churn-post-mortem composes from: the
+# risk and recovery picture, the champion story, the open commitments
+# and adoption gaps, the renewal plan, and the brief.
+_CHURN_POST_MORTEM_SOURCE_AGENTS = (
+    "risk-watcher",
+    "escalation-manager",
+    "champion-change",
+    "trust-repair",
+    "call-recap-and-commitments",
+    "adoption-gaps",
+    "renewal-desk",
+    "briefer",
+)
+
+# What would have to change before a re-approach could work, by
+# churn-reason kind. Templated next steps, not model prose: each line
+# names the fix the reason itself points at.
+_CHURN_FIX_BY_KIND = {
+    "closed-lost-renewal": (
+        "The renewal itself would have to be re-openable: a new budget "
+        "cycle, a new sponsor, or a scope the customer actually wants."
+    ),
+    "champion-departure": (
+        "A new sponsor would have to be engaged: the departed champion "
+        "is gone, so the re-approach needs a named person inside the "
+        "account, not the old relationship."
+    ),
+    "support-failure": (
+        "The support failure would have to be fixed in a way the "
+        "customer can see: a shipped fix, not a promise of one."
+    ),
+    "missed-commitments": (
+        "The missed commitments would have to be closed first: a "
+        "re-approach that repeats an unkept promise is a second miss."
+    ),
+    "escalation": (
+        "The escalation would have to be resolved and the resolution "
+        "shown to the customer: an open escalation is not a door to "
+        "knock on."
+    ),
+    "adoption": (
+        "The adoption gap would have to close: seats or teams bought "
+        "but never used are the reason the renewal did not survive."
+    ),
+    "named": (
+        "The named reason would have to change: re-approach only when "
+        "the thing that drove the churn is no longer true."
+    ),
+}
+
+# The do-not list for the SDR. Fixed rules of the handoff, not model
+# prose: this is a future re-approach, not a relitigation and not a
+# discount-led save attempt.
+_CHURN_DO_NOT = (
+    "Do not re-litigate the churn with the customer.",
+    "Do not lead with a discount.",
+    "Do not contact the departed champion at their old address.",
+)
+
+
+def _closed_lost_renewal_opp(opportunities) -> dict | None:
+    """The renewal opportunity that closed lost, if one is on record.
+    None when the renewal is still open or no renewal opp exists: a
+    churned account with no closed-lost opp is a gap, not a guess."""
+    opps = (opportunities or {}).get("opportunities", []) or []
+    for opp in opps:
+        if str(opp.get("type", "")).lower() != "renewal":
+            continue
+        if str(opp.get("stage", "")).lower() == "closed lost":
+            return opp
+    return None
+
+
+def _account_churned(account_record: dict) -> bool:
+    """Whether the account record itself flags the account churned: a
+    status of churned, cancelled, or lost, or health churned. A live
+    Salesforce record may carry one; the stub and CSV records do not."""
+    status = str(account_record.get("status", "") or "").lower()
+    if status in ("churned", "cancelled", "canceled", "lost"):
+        return True
+    return str(account_record.get("health", "") or "").lower() == "churned"
+
+
+def _churn_reasons(
+    job: dict,
+    account_record: dict,
+    opportunities,
+    signals: list[dict],
+    records: list,
+    missed: list[dict],
+    champion_signals: list[dict],
+    adoption_list: list[dict],
+) -> list[dict]:
+    """Why the account churned, harness-computed from evidence only.
+
+    The churn itself must be established first: a closed-lost renewal
+    opp, a reason the job names, or an account record flagged churned.
+    A high-severity support ticket or a quiet champion on a live
+    account is not a churn, so without an anchor no reason is claimed
+    at all: the draft says the reason is not on file. With the churn
+    anchored, each reason is {"kind", "summary", "evidence"}: a reason
+    the job names, the closed-lost renewal opp, a champion who moved
+    on or whose mail bounces, a high-severity support failure, missed
+    prior commitments, open escalation records, or adoption gaps. A
+    quiet champion is not a departure and a promoted champion is not
+    a loss, so neither counts here."""
+    named = str(job.get("churn_reason", "") or "").strip()
+    lost_opp = _closed_lost_renewal_opp(opportunities)
+    if not named and lost_opp is None and not _account_churned(
+        account_record
+    ):
+        return []
+    reasons: list[dict] = []
+    if named:
+        reasons.append(
+            {
+                "kind": "named",
+                "summary": named,
+                "evidence": "Named in the job: %r" % named,
+            }
+        )
+    if lost_opp is not None:
+        amount = lost_opp.get("amount")
+        reasons.append(
+            {
+                "kind": "closed-lost-renewal",
+                "summary": (
+                    "Renewal %s closed lost (%s, close date %s)"
+                    % (
+                        lost_opp.get("name", "unnamed"),
+                        format_money(amount)
+                        if isinstance(amount, (int, float))
+                        else "amount not on record",
+                        lost_opp.get("close_date") or "no close date",
+                    )
+                ),
+                "evidence": (
+                    "Closed-lost renewal opportunity %s in the gathered "
+                    "records." % lost_opp.get("name", "unnamed")
+                ),
+            }
+        )
+    for signal in champion_signals or []:
+        if signal.get("kind") in ("champion-moved-on", "champion-bounce"):
+            reasons.append(
+                {
+                    "kind": "champion-departure",
+                    "summary": signal.get("text", ""),
+                    "evidence": (
+                        "Champion departure signal in the gathered records."
+                    ),
+                }
+            )
+    for signal in signals or []:
+        if (
+            signal.get("severity") == "high"
+            and signal.get("kind") == "support-delivery"
+        ):
+            reasons.append(
+                {
+                    "kind": "support-failure",
+                    "summary": signal.get("text", ""),
+                    "evidence": (
+                        "High-severity support/delivery signal in the "
+                        "gathered records."
+                    ),
+                }
+            )
+    if missed:
+        reasons.append(
+            {
+                "kind": "missed-commitments",
+                "summary": (
+                    "%d prior commitment(s) past due and not closed, "
+                    "first: %r" % (len(missed), missed[0].get("text", ""))
+                ),
+                "evidence": (
+                    "Missed prior commitments read out of prior "
+                    "call-recap drafts."
+                ),
+            }
+        )
+    open_records = [
+        record
+        for record in records
+        if str(getattr(record, "status", "")) in ("open", "escalated")
+    ]
+    if open_records:
+        first = open_records[0]
+        reasons.append(
+            {
+                "kind": "escalation",
+                "summary": (
+                    "%d escalation record(s) still open, first: %s"
+                    % (
+                        len(open_records),
+                        str(
+                            getattr(first, "summary", "")
+                            or first.signal_key
+                        ),
+                    )
+                ),
+                "evidence": "Escalation record %s (%s) in the escalation "
+                "store." % (first.id, first.status),
+            }
+        )
+    if adoption_list:
+        reasons.append(
+            {
+                "kind": "adoption",
+                "summary": (
+                    "%d adoption gap(s) on record, first: %s"
+                    % (len(adoption_list), adoption_list[0].get("item", ""))
+                ),
+                "evidence": (
+                    "Adoption gaps computed from the usage data and the "
+                    "account record."
+                ),
+            }
+        )
+    return reasons
+
+
+def _extract_new_company(job: dict, composed_text: str) -> str | None:
+    """The company a departed champion moved to, named only when a
+    record says so: the job names it, or a prior draft writes "new
+    company: <Name>" in the colon form. A sentence that merely
+    mentions a company never yields one: the re-approach contact is
+    never a guess."""
+    named = str(job.get("champion_new_company", "") or "").strip()
+    if named:
+        return named
+    match = re.search(
+        r"[Nn]ew company:\s+([A-Z][A-Za-z0-9]+(?: [A-Z][A-Za-z0-9]+)*)",
+        composed_text or "",
+    )
+    if match:
+        return match.group(1).strip()
+    return None
+
+
+def _reapproach_triggers(job: dict, new_company: str | None) -> list[str]:
+    """The events a re-approach waits for: the departed champion
+    landing somewhere new (only when a record names the company), or
+    a trigger the job names. Empty when nothing is on file: the plan
+    says so instead of inventing a trigger."""
+    triggers: list[str] = []
+    if new_company:
+        triggers.append(
+            "Departed champion now at %s (named in the records): the "
+            "move is a re-approach trigger." % new_company
+        )
+    trigger = str(job.get("trigger", "") or "").strip()
+    if trigger:
+        triggers.append("Named in the job: %s." % trigger)
+    return triggers
+
+
+def _reapproach_timing(job: dict, lost_opp, today=None) -> dict:
+    """When to try again, harness-computed, never invented.
+
+    Order: a date the job names, then the replacement contract's
+    renewal date when the job names one, then a cooling-off window
+    counted from the closed-lost date (90 days unless the job names
+    a different window, labeled proposed). None of those is a window:
+    kind "none" with the gap stated.
+    """
+    if today is None:
+        from datetime import date as _date
+
+        today = _date.today()
+    named = str(job.get("reapproach_date", "") or "").strip()
+    if named:
+        parsed = _parse_iso_date(named)
+        if parsed is not None:
+            return {
+                "kind": "named",
+                "text": "Re-approach on %s." % parsed.isoformat(),
+                "evidence": "Date named in the job.",
+            }
+    replacement = str(
+        job.get("replacement_renewal_date", "") or ""
+    ).strip()
+    if replacement:
+        parsed = _parse_iso_date(replacement)
+        if parsed is not None:
+            return {
+                "kind": "replacement-renewal",
+                "text": (
+                    "Re-approach when the replacement contract renews "
+                    "(%s)." % parsed.isoformat()
+                ),
+                "evidence": "Replacement renewal date named in the job.",
+            }
+    if lost_opp is not None:
+        close = _parse_iso_date(str(lost_opp.get("close_date", "") or ""))
+        if close is not None:
+            days = job.get("cooling_off_days")
+            try:
+                days = int(days) if days is not None else 90
+            except (TypeError, ValueError):
+                days = 90
+            if days <= 0:
+                days = 90
+            from datetime import timedelta as _timedelta
+
+            when = close + _timedelta(days=days)
+            return {
+                "kind": "cooling-off",
+                "text": (
+                    "Proposed: re-approach %s (%d days after the "
+                    "renewal closed lost on %s). Proposed, not a "
+                    "commitment: confirm the window with the account "
+                    "owner before the SDR acts on it."
+                    % (when.isoformat(), days, close.isoformat())
+                ),
+                "evidence": (
+                    "Cooling-off window counted from the closed-lost "
+                    "date %s." % close.isoformat()
+                ),
+            }
+    return {
+        "kind": "none",
+        "text": "",
+        "evidence": (
+            "No re-approach window is established: no replacement "
+            "renewal date, no closed-lost date to count a cooling-off "
+            "window from, and no date named in the job. Name a date, a "
+            "replacement renewal, or a trigger to set one."
+        ),
+    }
+
+
+def _reapproach_contact(
+    job: dict,
+    account_record: dict,
+    people: list[dict],
+    composed_text: str,
+    champion_name: str | None,
+    new_company: str | None,
+) -> dict | None:
+    """Who the SDR talks to, named only from evidence: a successor on
+    the account, the departed champion at their new company (only
+    when a record names the company), or the account owner. None
+    means no contact on file: a gap, never a guess."""
+    successor = _extract_successor(job, composed_text, people)
+    if successor:
+        return {
+            "name": successor,
+            "role": "successor",
+            "evidence": (
+                "Successor named in the job or a prior draft and on "
+                "the account."
+            ),
+        }
+    if champion_name and new_company:
+        return {
+            "name": champion_name,
+            "role": "departed champion, now at %s" % new_company,
+            "evidence": (
+                "Departed champion's new company named in the records."
+            ),
+        }
+    owner = str(account_record.get("owner", "") or "").strip()
+    if owner:
+        return {
+            "name": owner,
+            "role": "account owner",
+            "evidence": "Account owner in the account record.",
+        }
+    return None
+
+
+def _what_was_lost(
+    account_record: dict,
+    lost_opp,
+    opportunities,
+    usage: dict,
+    churn_established: bool,
+) -> list[str]:
+    """What the churn cost, from the records only. ARR is claimed as
+    lost only against a closed-lost renewal opp; with no closed-lost
+    opp the ARR on record is stated without claiming it lost, and
+    with no churn established at all no loss is claimed. Seats come
+    from the job's usage block; open expansion opportunities are
+    listed as pipeline now unlikely to close."""
+    lost: list[str] = []
+    arr = account_record.get("arr")
+    if lost_opp is not None:
+        amount = lost_opp.get("amount")
+        if isinstance(amount, (int, float)):
+            lost.append(
+                "ARR lost: %s (renewal %s closed lost)."
+                % (format_money(amount), lost_opp.get("name", "unnamed"))
+            )
+        elif isinstance(arr, (int, float)):
+            lost.append(
+                "ARR lost: %s (account ARR; the closed-lost renewal "
+                "opp carries no amount)." % format_money(arr)
+            )
+        else:
+            lost.append(
+                "ARR lost: amount not on record (renewal %s closed "
+                "lost)." % lost_opp.get("name", "unnamed")
+            )
+    elif churn_established:
+        if isinstance(arr, (int, float)):
+            lost.append(
+                "ARR on record: %s (no closed-lost renewal opp to "
+                "confirm the loss against)." % format_money(arr)
+            )
+        else:
+            lost.append("ARR on record: not stated.")
+    else:
+        if isinstance(arr, (int, float)):
+            lost.append(
+                "No loss claimed: no churn is established in the "
+                "records, so the ARR on record (%s) is not a loss. The "
+                "renewal is still open." % format_money(arr)
+            )
+        else:
+            lost.append(
+                "No loss claimed: no churn is established in the records."
+            )
+    seats = usage.get("seats_purchased")
+    if churn_established and isinstance(seats, (int, float)) and seats > 0:
+        active = usage.get("seats_active")
+        if isinstance(active, (int, float)):
+            lost.append(
+                "Seats: %d purchased, %d active at churn."
+                % (seats, active)
+            )
+        else:
+            lost.append("Seats: %d purchased." % seats)
+    if not churn_established:
+        # A live account's open expansion pipeline is not lost: only
+        # list it once the churn is established.
+        return lost
+    opps = (opportunities or {}).get("opportunities", []) or []
+    for opp in opps:
+        if "expansion" not in str(opp.get("type", "")).lower():
+            continue
+        if str(opp.get("stage", "")).lower() in (
+            "closed won",
+            "closed lost",
+        ):
+            continue
+        amount = opp.get("amount")
+        lost.append(
+            "Expansion pipeline now unlikely to close: %s (%s)."
+            % (
+                opp.get("name", "unnamed"),
+                format_money(amount)
+                if isinstance(amount, (int, float))
+                else "amount not on record",
+            )
+        )
+    return lost
+
+
+def _churn_timeline(
+    account_record: dict, records: list, lost_opp
+) -> list[str]:
+    """The dated events: last touch, the renewal close date, and the
+    escalation history. A timeline with nothing dated on it says so."""
+    events: list[str] = []
+    last_touch = str(account_record.get("last_touch", "") or "").strip()
+    if last_touch:
+        events.append("Last touch: %s." % last_touch)
+    if lost_opp is not None and lost_opp.get("close_date"):
+        events.append(
+            "Renewal closed lost: %s (%s)."
+            % (lost_opp.get("close_date"), lost_opp.get("name", "unnamed"))
+        )
+    for record in records or []:
+        created = str(getattr(record, "created_at", "") or "")
+        events.append(
+            "Escalation %s: %s (%s, %s)."
+            % (
+                record.id,
+                str(getattr(record, "summary", "") or record.signal_key),
+                record.status,
+                created[:10] if created else "no date",
+            )
+        )
+    return events
+
+
+def _churn_post_mortem_block(
+    reasons: list[dict],
+    timeline: list[str],
+    lost: list[str],
+    timing: dict,
+    triggers: list[str],
+    contact: dict | None,
+    gaps: list[str],
+) -> str:
+    """The harness-written churn post-mortem block appended to the
+    draft: what happened, the timeline, what was lost, the
+    re-approach plan, the do-not list, and the gaps. Harness-written
+    so the handoff is in the draft even when the model is the stub."""
+    lines = ["Churn reason:"]
+    if reasons:
+        for reason in reasons:
+            lines.append("- [%s] %s" % (reason["kind"], reason["summary"]))
+            lines.append("  Evidence: %s" % reason["evidence"])
+    else:
+        lines.append(
+            "- No churn reason is on file: no closed-lost renewal, no "
+            "champion departure, no high-severity support failure, no "
+            "missed commitments, no open escalations, and no adoption "
+            "gaps in the gathered records. Name the reason in the job "
+            "(churn_reason) or point the agent at the records that "
+            "show it."
+        )
+    lines.append("")
+    lines.append("Timeline:")
+    if timeline:
+        for event in timeline:
+            lines.append("- " + event)
+    else:
+        lines.append(
+            "- No dated events on record: no last touch, no renewal "
+            "close date, and no escalation history."
+        )
+    lines.append("")
+    lines.append("What was lost:")
+    for line in lost:
+        lines.append("- " + line)
+    lines.append("")
+    lines.append("Re-approach plan:")
+    if timing["kind"] == "none":
+        lines.append("- When: no re-approach window is established.")
+        lines.append("  %s" % timing["evidence"])
+    else:
+        lines.append("- When: %s" % timing["text"])
+        lines.append("  Evidence: %s" % timing["evidence"])
+    if contact is not None:
+        lines.append("- Who: %s (%s)." % (contact["name"], contact["role"]))
+        lines.append("  Evidence: %s" % contact["evidence"])
+    else:
+        lines.append(
+            "- Who: no re-approach contact on file. Name a successor, "
+            "the departed champion's new company, or the account owner."
+        )
+    if triggers:
+        lines.append("- Triggers (re-approach when one of these happens):")
+        for trigger in triggers:
+            lines.append("  - " + trigger)
+    else:
+        lines.append(
+            "- Triggers: none on file. Name a trigger event (a champion "
+            "landing somewhere new, a leadership change, the pain that "
+            "drove the churn being fixed) to set one."
+        )
+    if reasons:
+        lines.append("- What would have to change:")
+        for reason in reasons:
+            fix = _CHURN_FIX_BY_KIND.get(reason["kind"])
+            if fix:
+                lines.append("  - [%s] %s" % (reason["kind"], fix))
+    else:
+        lines.append(
+            "- What would have to change: unknown until the churn "
+            "reason is established."
+        )
+    lines.append("")
+    lines.append("Do not:")
+    for rule in _CHURN_DO_NOT:
+        lines.append("- " + rule)
+    lines.append("")
+    lines.append("Gaps:")
+    if gaps:
+        for gap in gaps:
+            lines.append("- " + gap)
+    else:
+        lines.append("- None.")
+    return "\n".join(lines)
+
+
+class ChurnPostMortemAgent(Agent):
+    """Documents why a churned account left and hands the record to
+    sales for a future re-approach.
+
+    Not a CS win-back: the draft is never a "please come back" save
+    attempt. It is a sales handoff: what happened, what was lost,
+    and when and how to try again later. Gathers: the account record,
+    open opportunities, open cases and tickets, Linear issues, Gmail
+    and Slack messages, Gong and Zoom transcripts, and the escalation
+    store for this account. Composes from prior risk-watcher,
+    escalation-manager, champion-change, trust-repair,
+    call-recap-and-commitments, adoption-gaps, renewal-desk, and
+    briefer drafts when they exist; gathers directly otherwise.
+
+    The churn reason, the re-approach timing, and the re-approach
+    contact are harness-computed, never model prose: a reason is
+    claimed only when evidence names it (a closed-lost renewal, a
+    champion departure, a high-severity support failure, missed prior
+    commitments, open escalations, or adoption gaps), and only once
+    the churn itself is established (a closed-lost renewal opp, a
+    reason the job names, or an account record flagged churned), so a
+    support ticket on a live account never becomes a post-mortem.
+    With no evidence the draft says the reason is not on file and
+    names what would establish it. The re-approach window comes from
+    a date the job names, the replacement contract's renewal, or a
+    cooling-off window counted from the closed-lost date (labeled
+    proposed); with nothing on file the draft says no window is
+    established. The contact is a successor, the departed champion at
+    a named new company, or the account owner: no contact on file is
+    a gap, never a guess.
+    """
+
+    name = "churn-post-mortem"
+    display_name = "Churn Post-Mortem"
+    description = (
+        "Documents why a churned account left and hands the record to "
+        "sales for a future re-approach: the churn reason with "
+        "evidence, what was lost, and the re-approach plan (when, who, "
+        "what would have to change) with a do-not list for the SDR."
+    )
+    # No bare "churn": renewal-desk owns it, and a bare "churn" job
+    # still routes there. The multi-word keywords outscore it where
+    # the user means a post-mortem, and "churned" never matches
+    # renewal-desk's whole-word "churn".
+    keywords = [
+        "churn post-mortem",
+        "churn postmortem",
+        "post-mortem",
+        "postmortem",
+        "churn handoff",
+        "sdr handoff",
+        "handoff to sdr",
+        "churned account",
+        "churned",
+        "sdr",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the churn reason",
+            keywords=["churn reason:"],
+        ),
+        ProofItem(
+            "Gives the timeline",
+            keywords=["timeline:"],
+        ),
+        ProofItem(
+            "States what was lost",
+            keywords=["what was lost:"],
+        ),
+        ProofItem(
+            "Gives the re-approach plan",
+            keywords=["re-approach plan:"],
+        ),
+        ProofItem(
+            "Lists what the SDR must not do",
+            keywords=["do not:"],
+        ),
+        ProofItem(
+            "Cites the account record",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        from datetime import date as _date
+
+        account = _extract_account(job)
+        today = _date.today()
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _CHURN_POST_MORTEM_SOURCE_AGENTS
+        )
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("zendesk_list_tickets", {"organization": account}),
+            ("linear_list_issues", {"account": account}),
+            ("gmail_search_messages", {"query": account, "limit": 5}),
+            ("gong_search_transcripts", {"query": account, "limit": 5}),
+            ("zoom_search_transcripts", {"query": account, "limit": 5}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources, links, results = _gather_with_results(
+            registry, calls, budget, job=job
+        )
+        account_record = results.get("salesforce_get_account") or {}
+        opportunities = results.get("salesforce_list_opportunities")
+        signals = _risk_signals(results, account, today)
+        store = _escalation_store(job)
+        records = store.for_account(account)
+        missed = _missed_prior_commitments(job, account, today)
+        memory_text = _memory_context(job, account, budget)
+        people = _champion_people(results)
+        gaps: list[str] = []
+        champion_name, champion_source = _extract_champion(
+            job, composed_text, memory_text
+        )
+        champion: dict | None = None
+        if champion_name:
+            champion_key = _person_key(champion_name)
+            named = next(
+                (p for p in people if p["key"] == champion_key), None
+            )
+            if named is not None and named["side"] == "internal":
+                gaps.append(
+                    "The named champion %s is on our side (account "
+                    "owner or our team), not a customer champion."
+                    % champion_name
+                )
+            else:
+                email = ""
+                if named is not None and named["emails"]:
+                    email = sorted(named["emails"])[0]
+                champion = {"name": champion_name, "email": email}
+        known_before = champion_source in ("prior draft", "memory")
+        champion_signals = (
+            _champion_departure_signals(champion, results, known_before)
+            if champion is not None
+            else []
+        )
+        usage, _usage_missing = _adoption_usage(job, results)
+        adoption_list = _adoption_gaps(usage, account_record)
+        lost_opp = _closed_lost_renewal_opp(opportunities)
+        reasons = _churn_reasons(
+            job,
+            account_record,
+            opportunities,
+            signals,
+            records,
+            missed,
+            champion_signals,
+            adoption_list,
+        )
+        new_company = _extract_new_company(job, composed_text)
+        timing = _reapproach_timing(job, lost_opp, today)
+        triggers = _reapproach_triggers(job, new_company)
+        contact = _reapproach_contact(
+            job,
+            account_record,
+            people,
+            composed_text,
+            champion_name,
+            new_company,
+        )
+        churn_established = bool(reasons) or _account_churned(
+            account_record
+        )
+        lost = _what_was_lost(
+            account_record, lost_opp, opportunities, usage, churn_established
+        )
+        timeline = _churn_timeline(account_record, records, lost_opp)
+        if not reasons:
+            gaps.append(
+                "No churn reason is on file: name it in the job "
+                "(churn_reason), or point the agent at the closed-lost "
+                "renewal, the departure, the support failure, or the "
+                "missed commitments that show it."
+            )
+        if timing["kind"] == "none":
+            gaps.append(timing["evidence"])
+        if contact is None:
+            gaps.append(
+                "No re-approach contact on file: name a successor, the "
+                "departed champion's new company, or the account owner."
+            )
+        if not timeline:
+            gaps.append(
+                "No dated events on record: no last touch, no renewal "
+                "close date, and no escalation history."
+            )
+        if champion_name is None:
+            gaps.append(
+                "No champion named in the job, in any prior draft, or "
+                "in memory: the departure story cannot be checked."
+            )
+        if composed_text:
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            composed = False
+        if memory_text:
+            context["memory"] = memory_text
+        block = _churn_post_mortem_block(
+            reasons,
+            timeline,
+            lost,
+            timing,
+            triggers,
+            contact,
+            gaps,
+        )
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a churn post-mortem and SDR handoff for account %r. "
+            "This is a sales handoff, not a win-back: never write a "
+            "'please come back' save attempt. Cover: what happened, "
+            "what was lost, and the re-approach plan. Use only the "
+            "context below. Never invent a churn reason, a date, or a "
+            "contact the context does not support; say unknown where "
+            "the records do not say. The harness appends the "
+            "post-mortem block." % account,
+        )
+        system = (
+            "You are the churn post-mortem agent for a customer success "
+            "team. You document why an account left and hand the record "
+            "to sales for a future re-approach. You never write a "
+            "win-back: no 'please come back', no save attempt. Do not "
+            "invent a reason, a date, or a contact the context does "
+            "not show."
         )
         text = llm.complete(prompt, system=system)
         text = text + "\n\n" + block
@@ -8826,7 +9684,7 @@ class CaseTriageAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All twenty-one agents, keyed by name. All implemented."""
+    """All twenty-two agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -8849,6 +9707,7 @@ def build_agents() -> dict[str, Agent]:
         "call-recap-and-commitments": CallRecapAndCommitmentsAgent(),
         "trust-repair": TrustRepairAgent(),
         "ebr-prep": EBRPrepAgent(),
+        "churn-post-mortem": ChurnPostMortemAgent(),
     }
     return agents
 
