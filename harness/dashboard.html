@@ -352,7 +352,7 @@
   <section class="view" id="view-settings">
     <div class="card">
       <h2>Setup: language model</h2>
-      <div class="note">Pick the model Belay drafts with. Ollama runs on this machine, no key. A hosted provider needs its API key. Keys go to .env and are never shown in full.</div>
+      <div class="note">Pick the model Belay drafts with. Ollama runs on this machine, no key. A hosted provider needs its API key. Keys go to .env and are never shown in full. Token limit per job caps the gathered context for hosted providers; local Ollama is never counted, so the limit does not apply there.</div>
       <form class="inline" id="llm-form">
         <label>Provider
           <select name="provider" id="llm-provider"></select>
@@ -360,6 +360,7 @@
         <label id="llm-key-label">API key <input name="api_key" id="llm-key" type="password" placeholder="not set" autocomplete="off"></label>
         <label id="llm-base-label" style="display: none;">Base URL <input name="base_url" id="llm-base" placeholder="https://…" size="28" autocomplete="off"></label>
         <label>Model <input name="model" id="llm-model" size="28" autocomplete="off"></label>
+        <label>Token limit per job <input name="token_budget" id="llm-token-budget" type="number" min="1" step="1" size="8" autocomplete="off"></label>
         <button type="submit" class="approve">Save model</button>
       </form>
       <div class="form-error" id="llm-error"></div>
@@ -459,12 +460,16 @@ function render(state) {
     : '<div class="note">No events yet. Queue a draft to start the log.</div>';
   var t = state.tokens;
   document.getElementById("tokens").innerHTML =
-    '<div class="token-line">Token budget per job: <b>' + t.budget_per_job + '</b></div>' +
+    (t.unlimited
+      ? '<div class="token-line">Token budget per job: <b>Unlimited</b> (local Ollama, tokens not counted)</div>'
+      : '<div class="token-line">Token budget per job: <b>' + t.budget_per_job + '</b></div>') +
     '<div class="token-line">Pending drafts: <b>' + t.pending_drafts + '</b></div>' +
     '<div class="token-line">Estimated tokens in pending drafts: <b>' + t.estimated_tokens_pending + '</b> (computed from draft text)</div>' +
     '<div class="note">The queue file does not store token counts per draft; ' +
-    'this estimate is computed live from the draft text. The budget is enforced ' +
-    'per job when the agent runs, not as a pool.</div>';
+    'this estimate is computed live from the draft text. ' +
+    (t.unlimited
+      ? 'No budget is enforced: the LLM is local Ollama, so gathering is unlimited.'
+      : 'The budget is enforced per job when the agent runs, not as a pool.') + '</div>';
   var agentSelect = document.getElementById("schedule-agent");
   if (!agentSelect.options.length) {
     state.agents.forEach(function (a) {
@@ -1200,6 +1205,8 @@ async function loadSettings() {
   document.getElementById("llm-key").placeholder =
     state.llm.api_key_set ? state.llm.api_key_masked : "not set";
   document.getElementById("llm-base").value = state.llm.base_url || "";
+  document.getElementById("llm-token-budget").value =
+    state.llm.token_budget_per_job == null ? "" : state.llm.token_budget_per_job;
   syncLlmForm();
   renderConnectors(state);
 }
@@ -1269,6 +1276,7 @@ document.getElementById("llm-form").addEventListener("submit", async function (e
     api_key: form.api_key.value.trim() || null,
     base_url: form.base_url.value.trim() || null,
     model: form.model.value.trim() || null,
+    token_budget: form.token_budget.value.trim() || null,
   };
   try {
     var res = await api("/api/setup/llm",
@@ -1276,7 +1284,12 @@ document.getElementById("llm-form").addEventListener("submit", async function (e
         body: JSON.stringify(body) });
   } catch (e) { errEl.textContent = e.message; return; }
   statusEl.textContent = "Saved: " + res.provider + " (" + res.model + "). " +
-    (res.verified ? "Verified live." : "Could not verify; drafts will be stub-labeled until it works.");
+    (res.verified ? "Verified live." : "Could not verify; drafts will be stub-labeled until it works.") +
+    (res.unlimited === true
+      ? " Tokens are not counted (local Ollama)."
+      : (res.token_budget_per_job != null
+        ? " Token limit " + res.token_budget_per_job + " per job."
+        : ""));
   form.api_key.value = "";
   loadSettings();
   loadState();

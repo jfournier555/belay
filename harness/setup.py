@@ -1056,6 +1056,8 @@ def setup_state(config: Config) -> dict:
             "model": config.llm_model,
             "api_key_set": bool(config.llm_api_key),
             "api_key_masked": mask_secret(config.llm_api_key or ""),
+            "token_budget_per_job": config.token_budget_per_job,
+            "token_budget_unlimited": config.effective_token_budget is None,
         },
         "providers": [
             {
@@ -1137,6 +1139,36 @@ def apply_llm_choice(
         "base_url": new_config.llm_base_url,
         "model": new_config.llm_model,
         "verified": verify_llm(new_config),
+    }
+
+
+def parse_token_budget(value) -> int:
+    """Validate a per-job token limit from the dashboard: a whole
+    number of at least 1. Raises ValueError on anything else, so a
+    bad value is a 400 with nothing written."""
+    text = str(value).strip() if value is not None else ""
+    try:
+        limit = int(text)
+    except (TypeError, ValueError):
+        raise ValueError("Token limit must be a whole number.")
+    if limit < 1:
+        raise ValueError("Token limit must be at least 1.")
+    return limit
+
+
+def apply_token_budget(config: Config, value) -> dict:
+    """Save the per-job token limit from the dashboard: validate,
+    write HARNESS_TOKEN_BUDGET to .env, reload. The value is the
+    hosted limit; local Ollama never counts tokens, so the effective
+    budget is unlimited while Ollama is the LLM. Returns the saved
+    limit and the effective state. Raises ValueError on a bad value."""
+    limit = parse_token_budget(value)
+    write_env_values(config.env_path, {"HARNESS_TOKEN_BUDGET": str(limit)})
+    new_config = _reload_config(config)
+    return {
+        "token_budget_per_job": new_config.token_budget_per_job,
+        "effective_token_budget": new_config.effective_token_budget,
+        "unlimited": new_config.effective_token_budget is None,
     }
 
 

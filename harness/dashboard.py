@@ -247,11 +247,14 @@ def token_budget_state(queue: ApprovalQueue, config: Config) -> dict:
     The per-job budget comes from the config (default 8000). The token
     estimate is computed live from the pending drafts' text; the queue
     file does not store token counts, so nothing is claimed that was
-    not measured here.
+    not measured here. When the LLM is local Ollama the budget is
+    unlimited: local inference is free, so tokens are not counted.
     """
     pending = queue.list_pending()
     return {
         "budget_per_job": config.token_budget_per_job,
+        "effective_token_budget": config.effective_token_budget,
+        "unlimited": config.effective_token_budget is None,
         "pending_drafts": len(pending),
         "estimated_tokens_pending": sum(
             estimate_tokens(item.draft) for item in pending
@@ -612,10 +615,22 @@ def create_app(
     def set_setup_llm(body: dict) -> JSONResponse:
         # Apply an LLM choice from Settings: validate, write .env,
         # verify where a check exists. A bad provider or a missing
-        # key is a 400, never a silent no-op.
-        from harness.setup import _reload_config, apply_llm_choice
+        # key is a 400, never a silent no-op. A token_budget in the
+        # body is the per-job token limit for hosted providers; it is
+        # validated before anything is written, so a bad value is a
+        # 400 with no partial save. Absent means leave the limit
+        # unchanged.
+        from harness.setup import (
+            _reload_config,
+            apply_llm_choice,
+            apply_token_budget,
+            parse_token_budget,
+        )
 
         try:
+            limit = None
+            if body.get("token_budget") is not None:
+                limit = parse_token_budget(body.get("token_budget"))
             result = apply_llm_choice(
                 _reload_config(cfg),
                 str(body.get("provider", "") or ""),
@@ -623,6 +638,10 @@ def create_app(
                 base_url=body.get("base_url"),
                 model=body.get("model"),
             )
+            if limit is not None:
+                result.update(
+                    apply_token_budget(_reload_config(cfg), limit)
+                )
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         return JSONResponse(result)

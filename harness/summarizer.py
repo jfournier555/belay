@@ -78,19 +78,26 @@ class TokenBudget:
     has, rather than failing the job.
     """
 
-    def __init__(self, max_tokens: int) -> None:
+    def __init__(self, max_tokens: int | None) -> None:
+        """max_tokens None means unlimited: spend() never refuses.
+        Local Ollama inference is free, so no budget is enforced
+        for it; the limit only applies to hosted providers."""
         self.max_tokens = max_tokens
         self.spent = 0
 
-    def remaining(self) -> int:
-        """Estimated tokens left in the budget (never below 0)."""
+    def remaining(self) -> int | None:
+        """Estimated tokens left in the budget (never below 0);
+        None when the budget is unlimited."""
+        if self.max_tokens is None:
+            return None
         return max(0, self.max_tokens - self.spent)
 
     def spend(self, text: str) -> bool:
         """Charge `text` against the budget. Returns True when it fits and
-        was charged, False when it would exceed the budget (not charged)."""
+        was charged, False when it would exceed the budget (not charged).
+        An unlimited budget always fits."""
         cost = estimate_tokens(text)
-        if self.spent + cost > self.max_tokens:
+        if self.max_tokens is not None and self.spent + cost > self.max_tokens:
             return False
         self.spent += cost
         return True

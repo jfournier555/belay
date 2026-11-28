@@ -373,7 +373,7 @@ def execute_job(config: Config, job: dict):
         if "hourly_rate" not in job and config.loaded_hourly_rate is not None:
             job["hourly_rate"] = config.loaded_hourly_rate
             job["hourly_rate_source"] = "HARNESS_LOADED_HOURLY_RATE"
-    budget = TokenBudget(config.token_budget_per_job)
+    budget = TokenBudget(config.effective_token_budget)
     draft = agent.run(job, registry, llm, budget)
     queue = ApprovalQueue(config.approvals_file)
     item = queue.submit(
@@ -455,7 +455,17 @@ def cmd_run(args: argparse.Namespace) -> int:
         for p in draft.proof:
             if not p.get("passed"):
                 print("  FAIL: %s (%s)" % (p.get("label"), p.get("detail")))
-    print("Estimated tokens: %d (budget %d)" % (draft.tokens_estimate, config.token_budget_per_job))
+    print(
+        "Estimated tokens: %d (budget %s)"
+        % (
+            draft.tokens_estimate,
+            (
+                "unlimited"
+                if config.effective_token_budget is None
+                else str(config.effective_token_budget)
+            ),
+        )
+    )
     if args.show:
         print("--- draft ---")
         print(draft.text)

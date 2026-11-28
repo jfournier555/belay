@@ -93,6 +93,10 @@ Environment variables:
                              signal per account: open, escalated,
                              resolved.
     HARNESS_TOKEN_BUDGET     Max estimated tokens per job. Default: 8000.
+                             Only applies when the LLM is a hosted
+                             provider: local Ollama inference is free,
+                             so no budget is enforced for it (see
+                             effective_token_budget).
     HARNESS_LOADED_HOURLY_RATE
                              Loaded hourly rate in dollars, used by
                              value-finder to turn hours saved into dollars
@@ -287,6 +291,21 @@ class Config:
     def effective_router_model(self) -> str:
         """The model the router uses. Defaults to the agent model."""
         return self.router_model or self.llm_model
+
+    @property
+    def effective_token_budget(self) -> int | None:
+        """The per-job token budget in effect: None (unlimited) when
+        the configured LLM is local Ollama, whose inference costs
+        nothing to run; the configured HARNESS_TOKEN_BUDGET
+        otherwise. The limit is about hosted/cloud usage, so local
+        calls are never counted against it. The import is local:
+        llm.py imports the URL constants from this module, so a
+        top-level import would be circular."""
+        from .llm import is_ollama_base_url
+
+        if is_ollama_base_url(self.llm_base_url):
+            return None
+        return self.token_budget_per_job
 
     def llm_configured(self) -> bool:
         """True when an API key for a hosted provider is present.

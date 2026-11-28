@@ -227,7 +227,7 @@ def run_sweep(registry, config, today=None) -> dict:
     names, gaps, records = sweep_accounts(config)
     results = []
     for account in names:
-        budget = TokenBudget(config.token_budget_per_job)
+        budget = TokenBudget(config.effective_token_budget)
         results.append(
             sweep_account(
                 registry,
