@@ -1,12 +1,13 @@
-"""The specialist agents: the seventeen post-sales jobs the harness covers.
+"""The specialist agents: the eighteen post-sales jobs the harness covers.
 
-The seventeen jobs are the post-sales jobs that matter: scout, briefer,
+The eighteen jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
 risk-watcher, escalation-manager, competitive-defense,
-stakeholder-mapper, case-triage, champion-change, and handoff.
+stakeholder-mapper, case-triage, champion-change, handoff, and
+adoption-gaps.
 
-V1 implements seventeen end to end:
+V1 implements eighteen end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -105,8 +106,15 @@ V1 implements seventeen end to end:
   CSM. A missing previous owner or missing history is a named gap,
   never an error. With no prior history the draft is an empty-state
   brief, stated as such.
+- adoption-gaps: finds features and teams bought but never used:
+  unused seats, unused features, unonboarded teams, ranked by value
+  at stake (harness-computed: unused seats x ARR per seat when the
+  inputs support it, otherwise unknown and stated as such). A gap
+  without evidence is dropped, never drafted; where usage data is
+  missing the draft names what to collect instead of guessing. With
+  no gaps the draft says so, stated as such.
 
-All seventeen are implemented. Every job in the harness has a working agent.
+All eighteen are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -5269,6 +5277,488 @@ class HandoffAgent(Agent):
         )
 
 
+# The two agents whose drafts adoption-gaps composes from:
+# expansion-spotter (it already names usage gaps as expansion
+# openings) and value-finder (it quantifies unrealized gaps).
+_ADOPTION_GAPS_SOURCE_AGENTS = ("expansion-spotter", "value-finder")
+
+
+def _parse_usage_number(value) -> int | None:
+    """Parse a usage number leniently: ints, floats, and strings with
+    commas or a dollar sign. Anything else is None, never a crash."""
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    if isinstance(value, str):
+        cleaned = value.replace(",", "").replace("$", "").strip()
+        try:
+            return int(float(cleaned))
+        except ValueError:
+            return None
+    return None
+
+
+def _adoption_usage(job: dict, results: dict) -> tuple[dict, list[str]]:
+    """Normalize the usage data for an account.
+
+    The job's `usage` block is the primary source (the CSM pastes it
+    from a last-login or usage export): seats purchased and active,
+    entitled vs used features, teams with their onboarded state. The
+    account record supplies the observables: employees, named
+    contacts, last touch. Anything not supplied is a named gap in the
+    returned `missing` list, never a guess and never a crash: a
+    malformed usage block is a gap, not an error.
+    """
+    usage: dict = {
+        "seats_purchased": None,
+        "seats_active": None,
+        "features": [],
+        "teams": [],
+    }
+    missing: list[str] = []
+    raw = job.get("usage")
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        missing.append(
+            "Usage data: the job's usage block is not a mapping, so "
+            "no usage figures could be read from it."
+        )
+        raw = {}
+    usage["seats_purchased"] = _parse_usage_number(raw.get("seats_purchased"))
+    usage["seats_active"] = _parse_usage_number(raw.get("seats_active"))
+    features = raw.get("features") or []
+    if isinstance(features, list):
+        for entry in features:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "") or "").strip()
+            if not name:
+                continue
+            usage["features"].append(
+                {
+                    "name": name,
+                    "entitled": bool(entry.get("entitled", True)),
+                    "used": bool(entry.get("used", False)),
+                    "value_at_stake": _parse_usage_number(
+                        entry.get("value_at_stake")
+                    ),
+                }
+            )
+    teams = raw.get("teams") or []
+    if isinstance(teams, list):
+        for entry in teams:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name", "") or "").strip()
+            if not name:
+                continue
+            usage["teams"].append(
+                {
+                    "name": name,
+                    "onboarded": bool(entry.get("onboarded", False)),
+                    "headcount": _parse_usage_number(entry.get("headcount")),
+                }
+            )
+    if usage["seats_purchased"] is None:
+        missing.append(
+            "Seat counts: no seats purchased on record. Supply seats "
+            "purchased and seats active in the job usage block."
+        )
+    elif usage["seats_active"] is None:
+        missing.append(
+            "Seats active: seats purchased is known but no active-seat "
+            "count. Supply last-login or active-user data."
+        )
+    if not usage["features"]:
+        missing.append(
+            "Feature usage: no feature list on record. Supply entitled "
+            "vs used features in the job usage block."
+        )
+    if not usage["teams"]:
+        missing.append(
+            "Team onboarding: no team list on record. Supply the teams "
+            "and their onboarded state in the job usage block."
+        )
+    return usage, missing
+
+
+def _adoption_gaps(usage: dict, account_record: dict) -> list[dict]:
+    """Compute the adoption gaps from normalized usage and the account
+    record. Every gap carries its evidence and its source; a gap
+    without evidence is dropped, never drafted. Value at stake is a
+    dollar figure only when the inputs support one, otherwise None
+    (unknown, stated as such in the block)."""
+    gaps: list[dict] = []
+    arr = _parse_usage_number(account_record.get("arr"))
+    employees = _parse_usage_number(account_record.get("employees"))
+    contacts = account_record.get("contacts") or []
+    contact_count = len(
+        [
+            contact
+            for contact in contacts
+            if isinstance(contact, dict)
+            and str(contact.get("name", "") or "").strip()
+        ]
+    )
+    seats_purchased = usage.get("seats_purchased")
+    seats_active = usage.get("seats_active")
+    if (
+        seats_purchased is not None
+        and seats_active is not None
+        and seats_active < seats_purchased
+    ):
+        unused = seats_purchased - seats_active
+        per_seat = None
+        if arr is not None and seats_purchased:
+            per_seat = arr / seats_purchased
+        value = round(unused * per_seat) if per_seat is not None else None
+        gaps.append(
+            {
+                "kind": "seats",
+                "item": "%d unused seats" % unused,
+                "evidence": "%d of %d seats active (last-login data)"
+                % (seats_active, seats_purchased),
+                "source": "job usage",
+                "value_at_stake": value,
+                "next_step": (
+                    "Right-size or reassign: confirm with the champion "
+                    "which seats are still needed before renewal."
+                ),
+            }
+        )
+    for feature in usage.get("features", []):
+        if feature.get("entitled") and not feature.get("used"):
+            gaps.append(
+                {
+                    "kind": "features",
+                    "item": feature["name"],
+                    "evidence": "Entitled but unused (feature usage)",
+                    "source": "job usage",
+                    "value_at_stake": feature.get("value_at_stake"),
+                    "next_step": (
+                        "Enablement: schedule a working session on %s "
+                        "with the owning team." % feature["name"]
+                    ),
+                }
+            )
+    for team in usage.get("teams", []):
+        if not team.get("onboarded"):
+            headcount = team.get("headcount")
+            value = None
+            if headcount is not None and arr is not None and employees:
+                value = round(headcount * arr / employees)
+            evidence = "Not onboarded"
+            if headcount is not None:
+                evidence += "; %d people" % headcount
+            gaps.append(
+                {
+                    "kind": "teams",
+                    "item": team["name"],
+                    "evidence": evidence,
+                    "source": "job usage",
+                    "value_at_stake": value,
+                    "next_step": (
+                        "Onboard %s: champion intro to the team lead, "
+                        "then a first-value session." % team["name"]
+                    ),
+                }
+            )
+    if employees and contact_count and contact_count <= max(2, employees // 50):
+        gaps.append(
+            {
+                "kind": "teams",
+                "item": "Org coverage",
+                "evidence": (
+                    "%d named contacts for %d employees: most of the "
+                    "org is not in the system" % (contact_count, employees)
+                ),
+                "source": "salesforce_get_account",
+                "value_at_stake": None,
+                "next_step": (
+                    "Map the org: confirm with the champion which teams "
+                    "use the product and who leads them."
+                ),
+            }
+        )
+    return gaps
+
+
+_ADOPTION_GAP_KIND_ORDER = {"seats": 0, "features": 1, "teams": 2}
+
+
+def _rank_adoption_gaps(gaps: list[dict]) -> list[dict]:
+    """Rank gaps by value at stake (known dollars first, highest
+    first), then kind order (seats, features, teams), then item name.
+    Harness-computed, never model prose. Unknown value sorts after
+    known value within its kind."""
+    return sorted(
+        gaps,
+        key=lambda gap: (
+            0 if gap.get("value_at_stake") is not None else 1,
+            -(gap.get("value_at_stake") or 0),
+            _ADOPTION_GAP_KIND_ORDER.get(gap.get("kind", ""), 99),
+            str(gap.get("item", "")).lower(),
+        ),
+    )
+
+
+def _adoption_usage_summary(
+    job: dict, usage: dict, account_record: dict
+) -> str:
+    """One line stating what usage data was available for this run."""
+    parts: list[str] = []
+    if job.get("usage"):
+        bits = []
+        if usage.get("seats_purchased") is not None:
+            if usage.get("seats_active") is not None:
+                bits.append(
+                    "%d of %d seats active"
+                    % (usage["seats_active"], usage["seats_purchased"])
+                )
+            else:
+                bits.append(
+                    "%d seats purchased, active count unknown"
+                    % usage["seats_purchased"]
+                )
+        if usage.get("features"):
+            bits.append("%d features" % len(usage["features"]))
+        if usage.get("teams"):
+            bits.append("%d teams" % len(usage["teams"]))
+        parts.append(
+            "Job usage: " + ("; ".join(bits) if bits else "supplied but empty")
+        )
+    else:
+        parts.append("No job usage supplied.")
+    record_bits = []
+    employees = _parse_usage_number(account_record.get("employees"))
+    if employees is not None:
+        record_bits.append("%d employees" % employees)
+    contacts = account_record.get("contacts") or []
+    contact_count = len(
+        [
+            contact
+            for contact in contacts
+            if isinstance(contact, dict)
+            and str(contact.get("name", "") or "").strip()
+        ]
+    )
+    if contact_count:
+        record_bits.append("%d named contacts" % contact_count)
+    last_touch = str(account_record.get("last_touch", "") or "").strip()
+    if last_touch:
+        record_bits.append("last touch %s" % last_touch)
+    if record_bits:
+        parts.append("Account record: " + ", ".join(record_bits) + ".")
+    return " ".join(parts)
+
+
+def _adoption_gaps_block(
+    gaps: list[dict], missing: list[str], usage_summary: str
+) -> str:
+    """The harness-written adoption block appended to the draft: the
+    ranked gaps with evidence, value at stake, and next step; what
+    usage data was available and what is missing; and the next steps.
+    A gap without evidence never appears here."""
+    lines = ["adoption gaps (ranked by value at stake):"]
+    if gaps:
+        for index, gap in enumerate(gaps, 1):
+            value = gap.get("value_at_stake")
+            if value is not None:
+                value_text = "$%s at stake" % format(value, ",")
+            else:
+                value_text = "value at stake unknown"
+            lines.append(
+                "%d. [%s] %s — %s. Evidence: %s (source: %s). "
+                "Next step: %s"
+                % (
+                    index,
+                    gap["kind"],
+                    gap["item"],
+                    value_text,
+                    gap["evidence"],
+                    gap["source"],
+                    gap["next_step"],
+                )
+            )
+    else:
+        lines.append("No adoption gaps found in the gathered data.")
+    lines.append("")
+    lines.append("usage data:")
+    lines.append(usage_summary)
+    if missing:
+        lines.append("Missing usage data — collect before the next run:")
+        for item in missing:
+            lines.append("- " + item)
+    lines.append("")
+    lines.append("next steps:")
+    if gaps:
+        for gap in gaps:
+            lines.append("- " + gap["next_step"])
+    else:
+        lines.append(
+            "- Collect the missing usage data first: seat counts, "
+            "last-login data, feature usage, and the team list."
+        )
+    return "\n".join(lines)
+
+
+class AdoptionGapsAgent(Agent):
+    """Finds features and teams that were bought but never used.
+
+    Gathers: account record, open opportunities, open cases, recent
+    email threads, and recent Slack signals. Reads prior drafts from
+    expansion-spotter and value-finder out of the approval queue and
+    builds on them. Drafts: the adoption gaps ranked by value at
+    stake (unused seats, unused features, unonboarded teams), each
+    with its evidence and a suggested next step, plus what usage data
+    was available and what is missing.
+
+    Ranking and value at stake are harness-computed, never model
+    prose: unused seats x ARR per seat when the inputs support it,
+    otherwise unknown and stated as such. A gap without evidence is
+    dropped, never drafted. Where usage data is missing entirely the
+    draft says so and names what to collect instead of guessing. The
+    primary usage source is the job's `usage` block (the CSM pastes
+    it from a last-login or usage export); the account record
+    supplies the observables (employees, named contacts, last touch).
+    """
+
+    name = "adoption-gaps"
+    display_name = "Adoption Gaps"
+    description = (
+        "Finds features and teams bought but never used: unused seats, "
+        "unused features, unonboarded teams, ranked by value at stake."
+    )
+    keywords = [
+        "adoption gaps",
+        "adoption gap",
+        "unused seats",
+        "unused features",
+        "never used",
+        "not using",
+        "low adoption",
+        "seat usage",
+        "feature usage",
+        "adoption",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the account",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Lists adoption gaps ranked by value at stake",
+            keywords=["adoption gaps (ranked by value at stake):"],
+        ),
+        ProofItem(
+            "Names the usage data available and missing",
+            keywords=["usage data:"],
+        ),
+        ProofItem(
+            "Lists next steps",
+            keywords=["next steps:"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _ADOPTION_GAPS_SOURCE_AGENTS
+        )
+        if composed_text:
+            # Composed: build from the prior drafts. Only the fresh
+            # account record, opportunities, cases, and Slack signals
+            # are gathered directly; the source drafts carry the usage
+            # gaps they already named.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            # Fallback: no prior drafts for this account, gather directly.
+            calls = [
+                ("salesforce_get_account", {"account": account}),
+                ("salesforce_list_opportunities", {"account": account}),
+                ("salesforce_list_cases", {"account": account}),
+                ("gmail_search_messages", {"query": account, "limit": 5}),
+                ("slack_search_messages", {"query": account, "limit": 5}),
+            ]
+            context, sources, links, results = _gather_with_results(
+                registry, calls, budget, job=job
+            )
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        account_record = results.get("salesforce_get_account") or {}
+        usage, missing = _adoption_usage(job, results)
+        gaps = _adoption_gaps(usage, account_record)
+        ranked = _rank_adoption_gaps(gaps)
+        usage_summary = _adoption_usage_summary(job, usage, account_record)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft an adoption gaps brief for account %r. Cover: the "
+            "features and teams bought but never used, what the usage "
+            "data shows, and the next steps to drive adoption before "
+            "renewal. Use only the context below. Never invent a seat "
+            "count, a feature, a team, or a dollar figure the context "
+            "does not support; say unknown where the records do not say."
+            % account,
+        )
+        system = (
+            "You are the adoption gaps agent for a customer success "
+            "team. You find what was bought but never used and say "
+            "what to do about it before renewal. Name the gap, cite "
+            "the evidence, and do not invent usage the context does "
+            "not show. A gap the records do not fill is a gap, not a "
+            "guess."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + _adoption_gaps_block(ranked, missing, usage_summary)
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -6371,7 +6861,7 @@ class CaseTriageAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All seventeen agents, keyed by name. All implemented."""
+    """All eighteen agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -6390,6 +6880,7 @@ def build_agents() -> dict[str, Agent]:
         "case-triage": CaseTriageAgent(),
         "champion-change": ChampionChangeAgent(),
         "handoff": HandoffAgent(),
+        "adoption-gaps": AdoptionGapsAgent(),
     }
     return agents
 

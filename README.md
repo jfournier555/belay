@@ -1,6 +1,6 @@
 # Belay
 
-**A post sales AI harness.** Current version: **v0.17.0**, 17 agents, 10 connectors, 780 tests green.
+**A post sales AI harness.** Current version: **v0.17.0**, 18 agents, 10 connectors, 806 tests green.
 
 ![Belay: AI that does the post-sales busywork. Red rock mountains at golden hour.](assets/belay-banner.jpg)
 
@@ -166,7 +166,7 @@ python -m harness.run run --text "draft a renewal plan for Acme Corp" --stub
 # HARNESS_LOADED_HOURLY_RATE in the environment.
 python -m harness.run run --agent value-finder --account "Acme Corp" --stub --hourly-rate 150 --hours-saved 10 --show
 
-# See the seventeen agents and the registered tools.
+# See the eighteen agents and the registered tools.
 python -m harness.run agents
 python -m harness.run tools
 
@@ -204,7 +204,7 @@ Then run without `--stub`:
 python -m harness.run run --agent renewal-desk --account "Acme Corp"
 ```
 
-## The seventeen agents
+## The eighteen agents
 
 Each agent owns one job, not a schedule. Cadence is the scheduler
 (v1.4.0), a separate architecture piece.
@@ -228,6 +228,7 @@ Each agent owns one job, not a schedule. Cadence is the scheduler
 | case-triage | implemented | Triages the incoming cases, tickets, and issues: Salesforce cases, Zendesk tickets, Linear issues, and Gmail threads that read like support requests. Drafts a triage brief with the items grouped by subject across systems, ranked by priority (harness-computed from severity, age, and blocking impact), each with a suggested owner and a draft first response or internal summary. Items that are stale, duplicated across systems, or already covered by another agent's draft are flagged, not re-triaged. With no open items the draft is a clean bill. Composes from prior risk-watcher, escalation-manager, and voice-of-customer drafts when they exist; gathers directly otherwise. |
 | champion-change | implemented | Catches a champion departure and rebuilds the relationship map: the departed champion with the evidence, the relationship-map impact, ranked successor candidates (a title is claimed only with a source link), and the rebuild plan from the Champion Departure playbook's 7/14/30 spine. With no champion on record the draft names the gap, never a departure. Composes from prior advocate-finder, stakeholder-mapper, and risk-watcher drafts when they exist; gathers directly otherwise. |
 | handoff | implemented | Drafts the handoff brief for an inherited account: the account's current state, open items ranked by urgency (harness-computed), risks flagged with evidence, the champion and stakeholder picture, what is already in flight (pending drafts, scheduled jobs, open escalations), and the first-week actions for the new CSM. A missing previous owner or missing history is a named gap, never an error. Composes from prior briefer, renewal-desk, risk-watcher, stakeholder-mapper, and champion-change drafts when they exist; gathers directly otherwise. |
+| adoption-gaps | implemented | Finds features and teams bought but never used: unused seats, unused features, unonboarded teams, ranked by value at stake (harness-computed). A gap without evidence is dropped, never drafted; where usage data is missing the draft names what to collect instead of guessing. Composes from prior expansion-spotter and value-finder drafts when they exist; gathers directly otherwise. |
 
 ## Composition
 
@@ -486,7 +487,7 @@ files, all numbers from real harness state, nothing invented.
   what applied, op by op.
 - **MCP servers:** configured external servers; add and remove from
   here, and probe one to list its tools or see why it is unreachable.
-- **Agents:** the seventeen agents, one line each, with last-run state.
+- **Agents:** the eighteen agents, one line each, with last-run state.
 
 When a store is empty the view says so; a missing or corrupt store
 file renders as an empty view, never a crash. Everything is a draft
@@ -568,11 +569,11 @@ in-process connector tools.
 - Router (explicit, keyword, small-model LLM, default), tool registry
   (summary-first), approval queue (file-backed, persists), token budget,
   stub LLM, OpenAI-compatible LLM client (tested with a mocked transport).
-- All seventeen agents, end to end, in stub mode: renewal desk, briefer,
+- All eighteen agents, end to end, in stub mode: renewal desk, briefer,
   expansion spotter, onboarding guide, scout, qbr builder, advocate
   finder, voice of customer, value finder, Salesforce updater, risk
   watcher, escalation manager, competitive defense, stakeholder
-  mapper, case triage, champion change, and handoff.
+  mapper, case triage, champion change, handoff, and adoption gaps.
 - Write-back: the updater agent drafts changes with a harness-computed
   dry-run preview; only an approved write draft executes, exactly once
   per change, and rejected drafts never execute; stub writes simulate
