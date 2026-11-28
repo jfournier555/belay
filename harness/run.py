@@ -340,6 +340,7 @@ def execute_job(config: Config, job: dict):
         "handoff",
         "adoption-gaps",
         "call-recap-and-commitments",
+        "trust-repair",
     ):
         # Value-finder and qbr-builder read prior drafts from the
         # approval queue (value-finder synthesizes them, qbr-builder
@@ -350,7 +351,8 @@ def execute_job(config: Config, job: dict):
         # champion-change, handoff, and adoption-gaps compose from
         # prior drafts; call-recap-and-commitments reads its own
         # prior recaps to check whether an old commitment was kept
-        # or is still open.
+        # or is still open; trust-repair composes from prior drafts
+        # and reads prior call-recap drafts for missed commitments.
         # The queue path travels with the job.
         job.setdefault("approvals_file", config.approvals_file)
     if route.agent == "escalation-manager":
@@ -457,7 +459,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def cmd_agents(_args: argparse.Namespace) -> int:
-    """List the nineteen agents and whether each is implemented in v1."""
+    """List the twenty agents and whether each is implemented in v1."""
     for name in sorted(AGENTS):
         agent = AGENTS[name]
         status = "implemented" if agent.implemented else "planned"
@@ -969,7 +971,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_p.add_argument("--no-memory", action="store_true", help="Run cold: do not load the account's memory as context.")
     run_p.set_defaults(func=cmd_run)
 
-    agents_p = sub.add_parser("agents", help="List the nineteen agents.")
+    agents_p = sub.add_parser("agents", help="List the twenty agents.")
     agents_p.set_defaults(func=cmd_agents)
 
     tools_p = sub.add_parser("tools", help="List registered connector tools.")

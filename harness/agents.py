@@ -1,13 +1,13 @@
-"""The specialist agents: the nineteen post-sales jobs the harness covers.
+"""The specialist agents: the twenty post-sales jobs the harness covers.
 
-The nineteen jobs are the post-sales jobs that matter: scout, briefer,
+The twenty jobs are the post-sales jobs that matter: scout, briefer,
 onboarding guide, expansion spotter, QBR builder, advocate finder,
 renewal desk, voice-of-customer, value-finder, salesforce-updater,
 risk-watcher, escalation-manager, competitive-defense,
 stakeholder-mapper, case-triage, champion-change, handoff,
-adoption-gaps, and call-recap-and-commitments.
+adoption-gaps, call-recap-and-commitments, and trust-repair.
 
-V1 implements nineteen end to end:
+V1 implements twenty end to end:
 - renewal-desk: the highest-stakes job. Gathers account health, open
   renewal opportunity, open cases, and recent Slack signals, then drafts a
   renewal plan. Ties directly to the Renewal Scorecard on jfournier.net.
@@ -114,7 +114,20 @@ V1 implements nineteen end to end:
   missing the draft names what to collect instead of guessing. With
   no gaps the draft says so, stated as such.
 
-All nineteen are implemented. Every job in the harness has a working agent.
+- trust-repair: recovers trust after an outage, a bad escalation, or a
+  missed promise. The hit is harness-computed: claimed only when the job
+  names an incident, an escalation record is open, a high-severity
+  support failure is detected, a prior commitment is past due, or
+  escalation language appears in the records. The draft names the
+  trust-hit summary with evidence, the impact on relationships and
+  renewals, and the recovery plan: acknowledge and own it, fix it, the
+  follow-up cadence, and the proof the customer will see. Each step
+  names an owner and a date where the evidence supports one; where it
+  does not, the step says so instead of inventing one. With no incident
+  named anywhere the draft names the gap, never a recovery for a failure
+  that did not happen.
+
+All twenty are implemented. Every job in the harness has a working agent.
 
 Every agent follows the same contract:
 1. gather() calls tools through the registry (summary-first results only).
@@ -6548,6 +6561,549 @@ class CallRecapAndCommitmentsAgent(Agent):
         )
 
 
+# The four agents whose drafts trust-repair composes from:
+# escalation-manager first (its plan is the recovery's starting point),
+# plus risk-watcher, call-recap-and-commitments, and case-triage.
+_TRUST_REPAIR_SOURCE_AGENTS = (
+    "escalation-manager",
+    "risk-watcher",
+    "call-recap-and-commitments",
+    "case-triage",
+)
+
+
+def _classify_incident_text(text: str) -> str:
+    """Classify a named incident by its wording. Outage language first,
+    then escalation, then a missed promise. Anything else is unknown:
+    the incident is still named, only its kind is not classified."""
+    lowered = str(text or "").lower()
+    if any(
+        word in lowered
+        for word in ("outage", "downtime", "service down", "unavailable", "offline")
+    ) or re.search(r"\bdown\b", lowered):
+        return "outage"
+    if "escalat" in lowered:
+        return "bad-escalation"
+    if "promise" in lowered or "missed" in lowered or "never delivered" in lowered:
+        return "missed-promise"
+    return "unknown"
+
+
+def _missed_prior_commitments(job: dict, account: str, today=None) -> list[dict]:
+    """Prior commitments for this account whose due date has passed and
+    that no later material shows as done. A commitment with no due date
+    cannot be missed; one already closed is not missed. Newest first."""
+    if today is None:
+        from datetime import date as _date
+
+        today = _date.today()
+    missed: list[dict] = []
+    for item in _prior_commitments(job, account):
+        due = item.get("due")
+        if due is None:
+            continue
+        status = str(item.get("status", "") or "").lower()
+        if "closed" in status or "done" in status:
+            continue
+        if due < today:
+            missed.append(item)
+    return missed
+
+
+def _trust_hit(
+    job: dict, signals: list[dict], records: list, missed: list[dict]
+) -> dict:
+    """Work out what hit the account's trust, harness-computed.
+
+    Order: an incident the job names, then an open escalation record,
+    then a high-severity support failure, then a missed prior
+    commitment, then escalation language in messages or transcripts. A
+    hit with no named incident is kind "unknown" with the gap stated,
+    never a guessed incident. A stalled renewal is a risk, not a trust
+    hit, so it never claims the hit on its own."""
+    incident = str(job.get("incident", "") or "").strip()
+    if incident:
+        kind = str(job.get("incident_type", "") or "").strip().lower()
+        if kind not in (
+            "outage",
+            "bad-escalation",
+            "missed-promise",
+            "support-failure",
+        ):
+            kind = _classify_incident_text(incident)
+        return {
+            "kind": kind,
+            "summary": incident,
+            "evidence": "Named in the job: %r" % incident,
+            "severity": "high",
+        }
+    open_records = [
+        record
+        for record in records
+        if str(getattr(record, "status", "")) in ("open", "escalated")
+    ]
+    if open_records:
+        record = open_records[0]
+        kind = str(getattr(record, "signal_kind", "") or "")
+        if kind not in (
+            "outage",
+            "bad-escalation",
+            "missed-promise",
+            "support-failure",
+        ):
+            kind = "bad-escalation"
+        return {
+            "kind": kind,
+            "summary": str(
+                getattr(record, "summary", "") or record.signal_key
+            ),
+            "evidence": "Escalation record %s (%s, %s): %s"
+            % (
+                record.id,
+                record.signal_key,
+                record.status,
+                getattr(record, "summary", "") or "no summary recorded",
+            ),
+            "severity": str(getattr(record, "severity", "high") or "high"),
+        }
+    high_support = [
+        signal
+        for signal in signals
+        if signal.get("severity") == "high"
+        and signal.get("kind") == "support-delivery"
+    ]
+    if high_support:
+        signal = high_support[0]
+        return {
+            "kind": "support-failure",
+            "summary": signal["text"],
+            "evidence": "Risk signal (%s): %s" % (signal["kind"], signal["text"]),
+            "severity": "high",
+        }
+    if missed:
+        item = missed[0]
+        due = item.get("due")
+        return {
+            "kind": "missed-promise",
+            "summary": item["text"],
+            "evidence": "Prior commitment, due %s, still open: %r (owner: %s)"
+            % (
+                due.isoformat() if due else "no date given",
+                item["text"],
+                item.get("owner") or "no owner named",
+            ),
+            "severity": "medium",
+        }
+    language = [
+        signal for signal in signals if signal.get("kind") == "escalation-language"
+    ]
+    if language:
+        signal = language[0]
+        return {
+            "kind": "bad-escalation",
+            "summary": signal["text"],
+            "evidence": "Risk signal (%s): %s" % (signal["kind"], signal["text"]),
+            "severity": "medium",
+        }
+    return {"kind": "unknown", "summary": "", "evidence": "", "severity": "none"}
+
+
+def _trust_impact(
+    results: dict, account: str, signals: list[dict], records: list
+) -> list[str]:
+    """The impact assessment, harness-computed: renewal at risk, the
+    champion exposed, the owner, open escalations, and the open
+    high-severity support failure. Every line names its evidence."""
+    impact: list[str] = []
+    for signal in signals:
+        if signal.get("kind") == "renewal-stalled":
+            impact.append("Renewal at risk: %s" % signal["text"])
+        elif signal.get("kind") == "renewal-closing":
+            impact.append("Renewal closing soon: %s" % signal["text"])
+    open_records = [
+        record
+        for record in records
+        if str(getattr(record, "status", "")) in ("open", "escalated")
+    ]
+    if open_records:
+        impact.append(
+            "%d open escalation(s) for this account: %s."
+            % (
+                len(open_records),
+                ", ".join(
+                    "%s (%s)" % (record.id, record.signal_key)
+                    for record in open_records
+                ),
+            )
+        )
+    account_record = results.get("salesforce_get_account") or {}
+    contacts = account_record.get("contacts") or []
+    champion = next(
+        (
+            contact
+            for contact in contacts
+            if str(contact.get("role", "")).lower() == "champion"
+        ),
+        None,
+    )
+    if champion:
+        impact.append(
+            "Champion %s is the relationship most exposed: the recovery "
+            "lands or fails with them."
+            % champion.get("name", "?")
+        )
+    else:
+        impact.append(
+            "No champion named in the account record: the recovery has "
+            "no customer sponsor to anchor on."
+        )
+    owner = account_record.get("owner")
+    if owner:
+        impact.append("Account owner %s owns the recovery on our side." % owner)
+    else:
+        impact.append("No account owner named in the account record.")
+    high_support = [
+        signal
+        for signal in signals
+        if signal.get("severity") == "high"
+        and signal.get("kind") == "support-delivery"
+    ]
+    if high_support:
+        impact.append("Open high-severity support failure: %s" % high_support[0]["text"])
+    return impact
+
+
+def _recovery_steps(hit: dict, results: dict, records: list) -> list[dict]:
+    """The recovery plan, harness-written. Each step names an owner and
+    a date where the evidence supports one; where it does not, the step
+    says so instead of inventing one. Follow-up dates are proposed
+    (labeled as such); a fix date is stated only when a record states
+    one, and no record in the gather carries one, so the fix step
+    always asks for one before the next update."""
+    account_record = results.get("salesforce_get_account") or {}
+    owner = account_record.get("owner") or "the account owner"
+    fix_owner = owner
+    for key in ("salesforce_list_cases",):
+        for case in (results.get(key) or {}).get("cases", []) or []:
+            if str(case.get("status", "")).lower() in ("closed", "solved"):
+                continue
+            if case.get("owner"):
+                fix_owner = case["owner"]
+                break
+    hit_text = hit["summary"] or "the trust hit"
+    return [
+        {
+            "title": "Acknowledge and own it",
+            "detail": (
+                "Tell the customer, in the CSM's words: we own this. %s "
+                "%s is driving the recovery and will update you within "
+                "24 hours." % (hit_text, owner)
+            ),
+            "owner": owner,
+            "date": "within 24 hours (proposed)",
+        },
+        {
+            "title": "Fix it",
+            "detail": (
+                "Resolve the underlying failure: %s. The fix is owned by "
+                "%s." % (hit_text, fix_owner)
+            ),
+            "owner": fix_owner,
+            "date": None,
+        },
+        {
+            "title": "Follow-up cadence",
+            "detail": (
+                "Update the customer within 24 hours of this draft, then "
+                "every 7 days until the fix is confirmed, then a 30-day "
+                "check-in after resolution."
+            ),
+            "owner": owner,
+            "date": "24 hours, then every 7 days (proposed)",
+        },
+        {
+            "title": "Proof the customer will see",
+            "detail": (
+                "The case closed and confirmed by the customer on a "
+                "verification call, with the fix named in the closure "
+                "note. Until the case closes, the proof is not yet "
+                "available: say so in the update, do not claim it."
+            ),
+            "owner": owner,
+            "date": None,
+        },
+    ]
+
+
+def _trust_repair_block(
+    hit: dict,
+    impact: list[str],
+    steps: list[dict],
+    missed: list[dict],
+    gaps: list[str],
+) -> str:
+    """The harness-written trust repair block appended to the draft: the
+    trust-hit summary with evidence, the impact assessment, the
+    recovery plan with owner and date per step, the missed commitments,
+    and the gaps. Harness-written so the plan is in the draft even when
+    the model is the stub."""
+    lines = ["Trust hit:"]
+    if hit["kind"] == "unknown":
+        lines.append(
+            "- No trust hit named in the job, the escalation store, the "
+            "risk signals, or prior commitments. Name the incident "
+            "(outage, bad escalation, or missed promise) to build a "
+            "recovery plan."
+        )
+    else:
+        lines.append("- [%s] %s" % (hit["kind"], hit["summary"]))
+        lines.append("  Evidence: %s" % hit["evidence"])
+    lines.append("Severity: %s." % hit["severity"])
+    lines.append("")
+    lines.append("Impact:")
+    for line in impact:
+        lines.append("- " + line)
+    lines.append("")
+    lines.append("Recovery plan:")
+    for i, step in enumerate(steps, 1):
+        lines.append("%d. %s" % (i, step["title"]))
+        lines.append("   %s" % step["detail"])
+        lines.append(
+            "   Owner: %s."
+            % (
+                step["owner"]
+                or "not named in the records — name an owner before sending this"
+            )
+        )
+        lines.append(
+            "   Date: %s."
+            % (
+                step["date"]
+                or "not stated in the records — get a date before the next update"
+            )
+        )
+    lines.append("")
+    lines.append("Missed commitments:")
+    if missed:
+        for item in missed:
+            due = item.get("due")
+            lines.append(
+                "- %r (owner: %s, due: %s)"
+                % (
+                    item["text"],
+                    item.get("owner") or "no owner named",
+                    due.isoformat() if due else "no date given",
+                )
+            )
+    else:
+        lines.append("- None found in prior call-recap drafts.")
+    lines.append("")
+    lines.append("Gaps:")
+    if gaps:
+        for gap in gaps:
+            lines.append("- " + gap)
+    else:
+        lines.append("- None.")
+    return "\n".join(lines)
+
+
+class TrustRepairAgent(Agent):
+    """Recovers trust after an outage, a bad escalation, or a missed promise.
+
+    Gathers: the account record, open opportunities, open cases and
+    tickets, Linear issues, Gmail and Slack messages, Gong and Zoom
+    transcripts, the escalation store for this account, and prior
+    call-recap drafts (for missed commitments). Composes from prior
+    escalation-manager, risk-watcher, call-recap-and-commitments, and
+    case-triage drafts when they exist; gathers directly otherwise.
+    Drafts: the trust-hit summary with evidence, the impact on
+    relationships and renewals, and a recovery plan: acknowledge and
+    own it, fix it, the follow-up cadence, and the proof the customer
+    will see.
+
+    The hit, the impact, and the plan are harness-computed, never model
+    prose: the hit is claimed only when the job names an incident, an
+    escalation record is open, a high-severity support failure is
+    detected, a prior commitment is past due, or escalation language
+    appears in the records. A stalled renewal is a risk, not a trust
+    hit, so it never claims the hit on its own. Each recovery step names
+    an owner and a date where the evidence supports one; where it does
+    not, the step says so instead of inventing one. With no incident
+    named anywhere the draft names the gap, never a recovery for a
+    failure that did not happen.
+    """
+
+    name = "trust-repair"
+    display_name = "Trust Repair"
+    description = (
+        "Recovers trust after an outage, a bad escalation, or a missed "
+        "promise: the trust-hit summary with evidence, the impact on "
+        "relationships and renewals, and a recovery plan with owner, "
+        "dates, and the proof the customer will see."
+    )
+    keywords = [
+        "trust repair",
+        "trust-repair",
+        "recover trust",
+        "rebuild trust",
+        "trust hit",
+        "outage",
+        "service outage",
+        "missed promise",
+        "broken promise",
+        "bad escalation",
+        "make it right",
+        "recovery plan",
+        "win back trust",
+        "service failure",
+    ]
+    proof_checklist = [
+        ProofItem(
+            "Names the trust hit",
+            keywords=["trust hit:"],
+        ),
+        ProofItem(
+            "Assesses the impact",
+            keywords=["impact:"],
+        ),
+        ProofItem(
+            "Gives the recovery plan",
+            keywords=["recovery plan:"],
+        ),
+        ProofItem(
+            "Names the follow-up cadence",
+            keywords=["follow-up cadence"],
+        ),
+        ProofItem(
+            "Names the proof the customer will see",
+            keywords=["proof the customer will see"],
+        ),
+        ProofItem(
+            "Cites the account record",
+            sources=["salesforce_get_account"],
+        ),
+        ProofItem(
+            "Draft carries source links",
+            requires_links=True,
+        ),
+    ]
+
+    def run(self, job, registry, llm, budget):
+        from datetime import date as _date
+
+        account = _extract_account(job)
+        composed_text, composed_links, composed_agents = _compose_sources(
+            job, account, _TRUST_REPAIR_SOURCE_AGENTS
+        )
+        calls = [
+            ("salesforce_get_account", {"account": account}),
+            ("salesforce_list_opportunities", {"account": account}),
+            ("salesforce_list_cases", {"account": account}),
+            ("zendesk_list_tickets", {"organization": account}),
+            ("linear_list_issues", {"account": account}),
+            ("gmail_search_messages", {"query": account, "limit": 5}),
+            ("gong_search_transcripts", {"query": account, "limit": 5}),
+            ("zoom_search_transcripts", {"query": account, "limit": 5}),
+            ("slack_search_messages", {"query": account, "limit": 5}),
+        ]
+        context, sources, links, results = _gather_with_results(
+            registry, calls, budget, job=job
+        )
+        store = _escalation_store(job)
+        records = store.for_account(account)
+        signals = _risk_signals(results, account)
+        today = _date.today()
+        missed = _missed_prior_commitments(job, account, today)
+        hit = _trust_hit(job, signals, records, missed)
+        impact = _trust_impact(results, account, signals, records)
+        steps = _recovery_steps(hit, results, records)
+        gaps: list[str] = []
+        if hit["kind"] == "unknown":
+            gaps.append(
+                "No trust hit named: supply the incident in the job "
+                "(outage, bad escalation, or missed promise), or check "
+                "the escalation store and the risk signals."
+            )
+        account_record = results.get("salesforce_get_account") or {}
+        if not account_record.get("owner"):
+            gaps.append("No account owner named in the account record.")
+        contacts = account_record.get("contacts") or []
+        if not any(
+            str(contact.get("role", "")).lower() == "champion"
+            for contact in contacts
+        ):
+            gaps.append(
+                "No champion named in the account record: the recovery "
+                "has no customer sponsor to anchor on."
+            )
+        open_items = (
+            (results.get("salesforce_list_cases") or {}).get("cases", [])
+            or (results.get("zendesk_list_tickets") or {}).get("tickets", [])
+            or (results.get("linear_list_issues") or {}).get("issues", [])
+        )
+        if not open_items and not records:
+            gaps.append(
+                "No open cases, tickets, or issues found and no "
+                "escalation records: the fix has nothing to attach to yet."
+            )
+        if composed_text:
+            context["prior_agent_drafts"] = composed_text
+            seen_urls = {link.get("url") for link in links}
+            for link in composed_links:
+                if link.get("url") not in seen_urls:
+                    seen_urls.add(link.get("url"))
+                    links.append(link)
+            composed = True
+        else:
+            composed = False
+        memory_text = _memory_context(job, account, budget)
+        if memory_text:
+            context["memory"] = memory_text
+        block = _trust_repair_block(hit, impact, steps, missed, gaps)
+        prompt = _build_prompt(
+            self.name,
+            context,
+            "Draft a trust recovery plan for account %r (trust hit: %s). "
+            "Cover: what happened, the impact on relationships and "
+            "renewals, and the recovery. Use only the context below. "
+            "Never invent an incident, an owner, or a date the context "
+            "does not support; say unknown where the records do not say. "
+            "The harness appends the recovery plan."
+            % (account, hit["summary"] or "none named"),
+        )
+        system = (
+            "You are the trust repair agent for a customer success team. "
+            "You rebuild trust after a failure: name what happened, what "
+            "it cost, and how it gets fixed, and do not invent an "
+            "incident, an owner, or a date the context does not show."
+        )
+        text = llm.complete(prompt, system=system)
+        text = text + "\n\n" + block
+        checklist = list(self.proof_checklist)
+        if composed:
+            text += (
+                "\n\nComposed from prior drafts: %s."
+                % ", ".join(composed_agents)
+            )
+            checklist += [
+                ProofItem(
+                    "Composed from prior agent drafts",
+                    keywords=["composed from prior"],
+                )
+            ]
+        return self._finish(
+            Draft(
+                text=text,
+                agent=self.name,
+                job=job,
+                sources=sources,
+                links=links,
+                tokens_estimate=estimate_tokens(prompt) + estimate_tokens(text),
+            ),
+            checklist=checklist,
+        )
+
+
 # The three agents whose drafts escalation-manager composes from
 # (v1.7.0): risk-watcher first (its brief is the escalation's
 # trigger), plus renewal-desk and voice-of-customer.
@@ -7650,7 +8206,7 @@ class CaseTriageAgent(Agent):
 
 
 def build_agents() -> dict[str, Agent]:
-    """All nineteen agents, keyed by name. All implemented."""
+    """All twenty agents, keyed by name. All implemented."""
     agents: dict[str, Agent] = {
         "renewal-desk": RenewalDeskAgent(),
         "briefer": BrieferAgent(),
@@ -7671,6 +8227,7 @@ def build_agents() -> dict[str, Agent]:
         "handoff": HandoffAgent(),
         "adoption-gaps": AdoptionGapsAgent(),
         "call-recap-and-commitments": CallRecapAndCommitmentsAgent(),
+        "trust-repair": TrustRepairAgent(),
     }
     return agents
 

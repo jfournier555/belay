@@ -98,8 +98,8 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 
 class TestAdoptionGapsRegistered(unittest.TestCase):
-    def test_nineteen_agents_registered(self):
-        self.assertEqual(len(AGENTS), 19)
+    def test_twenty_agents_registered(self):
+        self.assertEqual(len(AGENTS), 20)
         implemented = [n for n, a in AGENTS.items() if a.implemented]
         self.assertEqual(
             sorted(implemented),
@@ -121,6 +121,7 @@ class TestAdoptionGapsRegistered(unittest.TestCase):
                 "salesforce-updater",
                 "scout",
                 "stakeholder-mapper",
+                "trust-repair",
                 "value-finder",
                 "voice-of-customer",
             ],

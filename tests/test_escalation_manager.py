@@ -130,8 +130,8 @@ def _seed(path: str, drafts: list) -> ApprovalQueue:
 
 
 class TestEscalationManagerRegistered(unittest.TestCase):
-    def test_nineteen_agents_registered(self):
-        self.assertEqual(len(AGENTS), 19)
+    def test_twenty_agents_registered(self):
+        self.assertEqual(len(AGENTS), 20)
         agent = AGENTS["escalation-manager"]
         self.assertTrue(agent.implemented)
         self.assertEqual(agent.display_name, "Escalation Manager")
