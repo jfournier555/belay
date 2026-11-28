@@ -542,7 +542,7 @@ agent candidates below.
 | Zendesk | v0.8.6 | `zendesk_list_tickets`, `zendesk_search_tickets`, `zendesk_get_ticket` |
 | Linear | v0.8.7 | `linear_list_issues`, `linear_search_issues`, `linear_get_issue` |
 | Google Calendar | v1.16.0, read-only | `gcal_list_events`, `gcal_get_event` |
-| CSV accounts | v0.18.1, read-only, local file | `csv_list_accounts`, `csv_get_account`, `csv_list_opportunities`, `csv_list_cases` |
+| CSV accounts | v0.18.0, read-only, local file | `csv_list_accounts`, `csv_get_account`, `csv_list_opportunities`, `csv_list_cases` |
 
 Each connector exposes its tools two ways, from one implementation
 (`tools.py`): in-process, through the harness tool registry (the v0.2 path),
